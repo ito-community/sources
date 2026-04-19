@@ -1,0 +1,17 @@
+{
+  "author": "kunihir0",
+  "contentRating": 0,
+  "description": "A novel source plugin for Ito.",
+  "id": "com.kunihir0.novelfire",
+  "language": "en",
+  "languages": [
+    "en"
+  ],
+  "min_app_version": "1.0.0",
+  "name": "NOVEL FIRE",
+  "nsfw": 0,
+  "sourceUrl": "https://github.com/ito-community/sources",
+  "type": "novel",
+  "url": "https://novelfire.net",
+  "version": "2.0.0"
+}

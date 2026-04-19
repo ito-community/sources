@@ -1,0 +1,13 @@
+[package]
+name = "asurascans"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+ito-rs = { git = "https://github.com/itoapp/ito-rs" }
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+postcard = "1.0"

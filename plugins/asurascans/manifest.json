@@ -1,0 +1,15 @@
+{
+    "id": "com.kunihir0.asurascans",
+    "name": "Asura Scans",
+    "version": "1.0.0",
+    "min_app_version": "1.0.0",
+    "url": "https://asurascans.com",
+    "sourceUrl": "https://github.com/ito-community/sources",
+    "contentRating": 0,
+    "nsfw": 0,
+    "language": "en",
+    "languages": ["en"],
+    "type": "manga",
+    "author": "kunihr0",
+    "description": "Asura Scans plugin for Ito."
+}

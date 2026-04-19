@@ -1,0 +1,15 @@
+{
+    "id": "com.kunihir0.luacomics",
+    "name": "LUACOMICS",
+    "version": "1.0.2",
+    "min_app_version": "1.0.0",
+    "url": "https://luacomic.org/",
+    "sourceUrl": "https://github.com/ito-community/sources",
+    "contentRating": 0,
+    "nsfw": 0,
+    "language": "en",
+    "languages": ["en"],
+    "type": "manga",
+    "author": "kunihir0",
+    "description": "lua scanslation comics"
+}
