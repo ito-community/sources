@@ -63,7 +63,7 @@ jobs:
 
       - name: Build Repository Index
         run: |
-          ito-pkg repo --input build/packages --output build --url "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}" --name "Ito Sources"
+          ito-pkg repo --input build/packages --output build --url "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}" --name "Ito Sources" --description "Community sourced and maintained plugins for Ito."
 
       - name: Build Website
         run: |

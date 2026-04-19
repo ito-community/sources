@@ -25,7 +25,6 @@ const error = ref<string | null>(null)
 
 function normalizeName(name: string) {
   // Normalize names like "VIOLETSCANS" to "Violetscans"
-  // If it's already mixed case or has spaces, keep it mostly as is but clean it up
   if (name === name.toUpperCase()) {
     return name.charAt(0) + name.slice(1).toLowerCase()
   }
@@ -39,7 +38,6 @@ const addRepoUrl = computed(() => {
 
 onMounted(async () => {
   try {
-    // index.json is expected to be in the same directory as index.html after build
     const response = await fetch('./index.json')
     if (!response.ok) throw new Error('Failed to fetch index.json')
     repo.value = await response.json()
@@ -53,66 +51,78 @@ onMounted(async () => {
 </script>
 
 <template>
-  <div class="min-h-screen bg-white text-black font-sans selection:bg-black selection:text-white px-6 py-12 md:px-12">
-    <header class="max-w-4xl mx-auto mb-16 border-b border-black pb-8">
-      <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-6">
+  <!-- Background matches iOS light mode default background (#f2f2f7) -->
+  <div class="min-h-screen bg-[#f2f2f7] text-gray-900 font-sans selection:bg-gray-300 selection:text-black px-4 py-12 md:px-12 relative overflow-hidden">
+    
+    <!-- Abstract blurred blobs to highlight the glassmorphism effect -->
+    <div class="absolute top-[-10%] left-[-10%] w-[60%] h-[60%] bg-white/60 rounded-full blur-[100px] pointer-events-none"></div>
+    <div class="absolute bottom-[-10%] right-[-10%] w-[70%] h-[70%] bg-gray-300/40 rounded-full blur-[100px] pointer-events-none"></div>
+
+    <header class="max-w-4xl mx-auto mb-12 relative z-10">
+      <!-- Glassmorphic Header Card -->
+      <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-6 bg-white/50 backdrop-blur-2xl border border-white/60 shadow-xl shadow-black/5 rounded-[2rem] p-8">
         <div>
-          <h1 class="text-4xl md:text-6xl font-black tracking-tighter uppercase italic">
+          <h1 class="text-3xl md:text-5xl font-bold tracking-tight text-black">
             {{ repo?.repo_name || 'Ito Repository' }}
           </h1>
-          <p class="mt-4 text-lg md:text-xl font-medium opacity-60 max-w-2xl leading-relaxed">
+          <p class="mt-2 text-base md:text-lg font-medium text-gray-600 max-w-xl leading-snug">
             {{ repo?.description || 'Browse and install plugins for Ito.' }}
           </p>
         </div>
         <a 
           v-if="repo"
           :href="addRepoUrl"
-          class="inline-block bg-black text-white px-8 py-4 text-sm font-bold uppercase tracking-widest hover:bg-white hover:text-black border-2 border-black transition-colors duration-300"
+          class="inline-flex items-center justify-center bg-black/90 text-white px-6 py-3.5 text-sm font-semibold rounded-full shadow-md hover:bg-black active:scale-95 transition-all duration-200"
         >
           Add Repository
         </a>
       </div>
     </header>
 
-    <main class="max-w-4xl mx-auto">
-      <div v-if="loading" class="text-xl font-bold animate-pulse">LOADING...</div>
-      <div v-else-if="error" class="text-red-600 font-bold border-2 border-red-600 p-4">
-        ERROR: {{ error }}
+    <main class="max-w-4xl mx-auto relative z-10">
+      <div v-if="loading" class="flex justify-center items-center py-20">
+        <div class="text-lg font-semibold text-gray-500 animate-pulse">Loading Plugins...</div>
       </div>
-      <div v-else-if="repo" class="grid grid-cols-1 md:grid-cols-2 gap-8">
+      <div v-else-if="error" class="bg-white/60 backdrop-blur-2xl border border-white/60 text-gray-800 font-medium rounded-3xl p-6 shadow-sm text-center">
+        Error: {{ error }}
+      </div>
+      <div v-else-if="repo" class="grid grid-cols-1 sm:grid-cols-2 gap-6">
+        <!-- Glassmorphic Plugin Cards -->
         <div 
           v-for="pkg in repo.packages" 
           :key="pkg.id"
-          class="group border border-black p-6 hover:bg-black hover:text-white transition-all duration-300 flex flex-col justify-between"
+          class="bg-white/40 backdrop-blur-2xl border border-white/60 shadow-lg shadow-black/5 hover:shadow-xl hover:shadow-black/10 rounded-[2rem] p-6 transition-all duration-300 flex flex-col justify-between group"
         >
           <div>
-            <div class="flex items-start justify-between mb-6">
-              <div class="w-16 h-16 border border-black group-hover:border-white overflow-hidden bg-white shrink-0">
+            <div class="flex items-center justify-between mb-5">
+              <!-- iOS Style App Icon -->
+              <div class="w-16 h-16 bg-white rounded-2xl shadow-sm border border-white overflow-hidden shrink-0 flex items-center justify-center group-hover:scale-105 transition-transform duration-300">
                 <img 
                   v-if="pkg.icon_url" 
                   :src="pkg.icon_url" 
                   :alt="pkg.name"
                   class="w-full h-full object-cover"
                 />
-                <div v-else class="w-full h-full flex items-center justify-center text-black font-bold text-xs uppercase p-2 text-center">
-                  No Icon
+                <div v-else class="text-gray-400 font-semibold text-[10px] uppercase tracking-wider">
+                  ICON
                 </div>
               </div>
-              <span class="text-[10px] font-bold uppercase tracking-widest border border-black group-hover:border-white px-2 py-1">
+              <!-- Badge -->
+              <span class="text-xs font-semibold uppercase tracking-wider bg-gray-200/50 text-gray-700 px-3 py-1 rounded-full">
                 {{ pkg.type }}
               </span>
             </div>
             
-            <h3 class="text-2xl font-black uppercase tracking-tight leading-none mb-2">
+            <h3 class="text-xl font-bold tracking-tight text-black mb-1">
               {{ normalizeName(pkg.name) }}
             </h3>
-            <p class="text-xs font-bold opacity-60 mb-6 uppercase tracking-widest">
+            <p class="text-sm font-medium text-gray-500 mb-6">
               Version {{ pkg.version }}
             </p>
           </div>
 
-          <div class="mt-4 flex items-center justify-between gap-4">
-            <span class="text-[10px] font-mono opacity-40 truncate flex-1 uppercase tracking-tighter">
+          <div class="mt-2 flex items-center justify-between pt-4 border-t border-gray-200/50">
+            <span class="text-[11px] font-mono text-gray-400 truncate flex-1">
               {{ pkg.id }}
             </span>
           </div>
@@ -120,16 +130,16 @@ onMounted(async () => {
       </div>
     </main>
 
-    <footer class="max-w-4xl mx-auto mt-24 pt-8 border-t border-black text-[10px] font-bold uppercase tracking-[0.2em] opacity-40">
-      &copy; {{ new Date().getFullYear() }} &mdash; POWERED BY ITO-PKG
+    <footer class="max-w-4xl mx-auto mt-20 pb-8 text-center text-xs font-semibold text-gray-400 uppercase tracking-widest relative z-10">
+      &copy; {{ new Date().getFullYear() }} &mdash; Powered by ito-pkg
     </footer>
   </div>
 </template>
 
 <style>
-/* Base typography resets if needed, though Tailwind 4 handles most */
 body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  background-color: #f2f2f7;
 }
 </style>
