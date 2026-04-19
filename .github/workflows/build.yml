@@ -1,0 +1,95 @@
+name: Build Plugins and Website
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "plugins/**"
+      - "web/**"
+      - ".github/workflows/build.yml"
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Install ito-pkg
+        run: |
+          cargo install --git https://github.com/kunihir0/ito-pkg
+
+      - name: Build Plugins
+        run: |
+          mkdir -p build/packages
+          for plugin in ./plugins/*; do
+            if [ -d "$plugin" ]; then
+              echo "Building $plugin..."
+              (
+                cd "$plugin"
+                ito-pkg pack
+              )
+              mv "$plugin"/*.ito build/packages/ || true
+            fi
+          done
+
+      - name: Build Repository Index
+        run: |
+          ito-pkg repo --input build/packages --output build --url "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}" --name "Ito Sources"
+
+      - name: Build Website
+        run: |
+          cd web
+          if [ -f "package.json" ]; then
+            npm install
+            npm run build
+          else
+            echo "No package.json found in web/ directory. Skipping website build."
+            mkdir -p dist
+          fi
+
+      - name: Merge Outputs
+        run: |
+          # Copy built repository files (index.json, packages/, icons/) to website dist folder
+          # Assuming Vue builds to web/dist
+          mkdir -p web/dist
+          cp -r build/* web/dist/
+
+      - name: Deploy to GitHub Pages
+        uses: JamesIves/github-pages-deploy-action@v4
+        if: ${{ github.ref == 'refs/heads/main' }}
+        with:
+          branch: gh-pages
+          folder: web/dist
+          git-config-name: GitHub Actions
+          git-config-email: github-actions[bot]@users.noreply.github.com
+          commit-message: Update source list and website
+          single-commit: true
