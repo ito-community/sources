@@ -1,7 +1,7 @@
 {
     "id": "com.kunihir0.luacomics",
     "name": "LUACOMICS",
-    "version": "1.0.2",
+    "version": "1.0.3",
     "min_app_version": "1.0.0",
     "url": "https://luacomic.org/",
     "sourceUrl": "https://github.com/ito-community/sources",

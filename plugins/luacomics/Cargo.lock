@@ -70,6 +70,7 @@ dependencies = [
 [[package]]
 name = "ito-rs"
 version = "0.1.0"
+source = "git+https://github.com/itoapp/ito-rs#2b2dbf2cf2a01610744b372f39607e1179b5eadd"
 dependencies = [
  "postcard",
  "serde",
