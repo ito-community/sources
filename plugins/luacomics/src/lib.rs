@@ -112,10 +112,13 @@ impl MangaProvider for LuaComic {
         let json: SeriesResponse = serde_json::from_slice(&res.body)
             .map_err(|_| ito_rs::Error::Host("Failed to parse API response".to_string()))?;
 
-        let entries: Vec<Manga> = json.data
+        let mut entries: Vec<Manga> = json.data
             .into_iter()
             .map(Self::api_series_to_manga)
             .collect();
+
+        let mut seen = std::collections::HashSet::new();
+        entries.retain(|e| seen.insert(e.key.clone()));
 
         let has_next_page = json.meta.current_page < json.meta.last_page;
 
@@ -141,10 +144,13 @@ impl MangaProvider for LuaComic {
                 .send()?;
             
             if let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
-                let entries: Vec<Manga> = series_list
+                let mut entries: Vec<Manga> = series_list
                     .into_iter()
                     .map(Self::api_series_to_manga)
                     .collect();
+                
+                let mut seen = std::collections::HashSet::new();
+                entries.retain(|e| seen.insert(e.key.clone()));
                 
                 return Ok(PageResult {
                     entries,
@@ -173,10 +179,13 @@ impl MangaProvider for LuaComic {
             .send()?;
         
         if let Ok(json) = serde_json::from_slice::<SeriesResponse>(&res.body) {
-            let entries: Vec<Manga> = json.data
+            let mut entries: Vec<Manga> = json.data
                 .into_iter()
                 .map(Self::api_series_to_manga)
                 .collect();
+
+            let mut seen = std::collections::HashSet::new();
+            entries.retain(|e| seen.insert(e.key.clone()));
 
             let has_next_page = json.meta.current_page < json.meta.last_page;
 
@@ -562,6 +571,9 @@ impl MangaProvider for LuaComic {
                             }
                         }
                         if !entries.is_empty() {
+                            let mut seen = std::collections::HashSet::new();
+                            entries.retain(|e| seen.insert(e.key.clone()));
+                            
                             components.push(HomeComponent {
                                 title: Some("Editor's Choice".into()),
                                 subtitle: None,
@@ -577,6 +589,9 @@ impl MangaProvider for LuaComic {
         }
         
         if !featured_mangas.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            featured_mangas.retain(|e| seen.insert(e.key.clone()));
+            
             components.insert(0, HomeComponent {
                 title: Some("Featured".into()),
                 subtitle: None,
@@ -585,6 +600,9 @@ impl MangaProvider for LuaComic {
         }
 
         if !recommended_mangas.is_empty() {
+            let mut seen = std::collections::HashSet::new();
+            recommended_mangas.retain(|e| seen.insert(e.key.clone()));
+            
             let idx = if !components.is_empty() && components[0].title.as_deref() == Some("Featured") { 1 } else { 0 };
             components.insert(idx, HomeComponent {
                 title: Some("Recommended".into()),
