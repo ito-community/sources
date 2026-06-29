@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::models::ComixChapter;
 
 fn is_official_like(ch: &ComixChapter) -> bool {
-	ch.scanlation_group_id == 10702 || ch.is_official
+	ch.scanlation_group_id == Some(10702) || ch.is_official
 }
 
 fn is_better(new_ch: &ComixChapter, cur: &ComixChapter) -> bool {

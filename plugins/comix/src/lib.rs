@@ -1,20 +1,22 @@
 use ito_rs::export_manga_plugin;
 use ito_rs::provider::MangaProvider;
-use ito_rs::models::{FilterItem, HomeLayout, HomeComponent, HomeComponentValue, Listing, Page};
+use ito_rs::models::{FilterItem, HomeLayout, HomeComponent, HomeComponentValue, Listing, Page, PageContent};
 use ito_rs::models::manga::{Chapter, Manga, PageResult as MangaPageResult};
 use ito_rs::net::Request;
 use ito_rs::Result;
 use std::collections::HashMap;
+use base64::Engine;
 
 mod hash;
 mod helpers;
 mod models;
 mod settings;
+mod web;
 
 use models::*;
 
 pub const BASE_URL: &str = "https://comix.to";
-pub const API_URL: &str = "https://comix.to/api/v2";
+pub const API_URL: &str = "https://comix.to/api/v1";
 
 const NSFW_GENRE_IDS: &[&str] = &["87264", "8", "87265", "13", "87266", "87268"];
 
@@ -34,29 +36,33 @@ impl MangaProvider for Comix {
         let hidden_types = settings::hidden_types();
         let hidden_terms = settings::hidden_terms();
 
-        let popular_url = format!("{}/top?type=trending&days=1&limit=20{}", API_URL, extra_qs);
-        let popular_res = Request::get(&popular_url).send()?;
-        let popular_mangas: Vec<Manga> = if let Ok(json) = serde_json::from_slice::<SearchResponse>(&popular_res.body) {
-            json.result.items.into_iter().filter(|m| !m.is_hidden(&hidden_types, &hidden_terms)).map(Manga::from).collect()
-        } else { vec![] };
+        let popular_url = format!("{}/manga/top?type=trending&days=1&limit=20{}", API_URL, extra_qs);
+        let popular_mangas: Vec<Manga> = if let Ok(json) = web::ComixWebView::fetch_json::<SearchResponse>(&popular_url) {
+            json.result.into_items().into_iter().filter(|m| !m.is_hidden(&hidden_types, &hidden_terms)).map(Manga::from).collect()
+        } else {
+            vec![]
+        };
 
-        let follows_url = format!("{}/top?type=follows&days=1&limit=20{}", API_URL, extra_qs);
-        let follows_res = Request::get(&follows_url).send()?;
-        let follows_mangas: Vec<Manga> = if let Ok(json) = serde_json::from_slice::<SearchResponse>(&follows_res.body) {
-            json.result.items.into_iter().filter(|m| !m.is_hidden(&hidden_types, &hidden_terms)).map(Manga::from).collect()
-        } else { vec![] };
+        let follows_url = format!("{}/manga/top?type=follows&days=1&limit=20{}", API_URL, extra_qs);
+        let follows_mangas: Vec<Manga> = if let Ok(json) = web::ComixWebView::fetch_json::<SearchResponse>(&follows_url) {
+            json.result.into_items().into_iter().filter(|m| !m.is_hidden(&hidden_types, &hidden_terms)).map(Manga::from).collect()
+        } else {
+            vec![]
+        };
 
         let latest_url = format!("{}/manga?scope=hot&limit=30&order[chapter_updated_at]=desc&page=1{}", API_URL, extra_qs);
-        let latest_res = Request::get(&latest_url).send()?;
-        let latest_mangas: Vec<Manga> = if let Ok(json) = serde_json::from_slice::<SearchResponse>(&latest_res.body) {
-            json.result.items.into_iter().filter(|m| !m.is_hidden(&hidden_types, &hidden_terms)).map(Manga::from).collect()
-        } else { vec![] };
+        let latest_mangas: Vec<Manga> = if let Ok(json) = web::ComixWebView::fetch_json::<SearchResponse>(&latest_url) {
+            json.result.into_items().into_iter().filter(|m| !m.is_hidden(&hidden_types, &hidden_terms)).map(Manga::from).collect()
+        } else {
+            vec![]
+        };
 
         let recent_url = format!("{}/manga?order[created_at]=desc&limit=10&page=1{}", API_URL, extra_qs);
-        let recent_res = Request::get(&recent_url).send()?;
-        let recent_mangas: Vec<Manga> = if let Ok(json) = serde_json::from_slice::<SearchResponse>(&recent_res.body) {
-            json.result.items.into_iter().filter(|m| !m.is_hidden(&hidden_types, &hidden_terms)).map(Manga::from).collect()
-        } else { vec![] };
+        let recent_mangas: Vec<Manga> = if let Ok(json) = web::ComixWebView::fetch_json::<SearchResponse>(&recent_url) {
+            json.result.into_items().into_iter().filter(|m| !m.is_hidden(&hidden_types, &hidden_terms)).map(Manga::from).collect()
+        } else {
+            vec![]
+        };
 
         Ok(HomeLayout {
             components: vec![
@@ -118,10 +124,10 @@ impl MangaProvider for Comix {
                 format!("{}/manga?types[]=manga&order[views_90d]=desc&page={}{}", API_URL, page, extra_qs)
             },
             "Most Recent Popular" => {
-                format!("{}/top?type=trending&days=1&limit=50{}", API_URL, extra_qs)
+                format!("{}/manga/top?type=trending&days=1&limit=50{}", API_URL, extra_qs)
             }
             "Most Follows New Comics" => {
-                format!("{}/top?type=follows&days=1&limit=50{}", API_URL, extra_qs)
+                format!("{}/manga/top?type=follows&days=1&limit=50{}", API_URL, extra_qs)
             }
             "Latest Updates (Hot)" => {
                 format!("{}/manga?scope=hot&limit=30&order[chapter_updated_at]=desc&page={}{}", API_URL, page, extra_qs)
@@ -133,8 +139,7 @@ impl MangaProvider for Comix {
         };
 
         if !url.is_empty() {
-            let res = Request::get(&url).send()?;
-            if let Ok(json) = serde_json::from_slice::<SearchResponse>(&res.body) {
+            if let Ok(json) = web::ComixWebView::fetch_json::<SearchResponse>(&url) {
                 return Ok(json.result.into_filtered(&hidden_types, &hidden_terms));
             }
         }
@@ -167,8 +172,7 @@ impl MangaProvider for Comix {
 
         url.push_str(&extra_qs);
 
-        let res = Request::get(&url).send()?;
-        if let Ok(json) = serde_json::from_slice::<SearchResponse>(&res.body) {
+        if let Ok(json) = web::ComixWebView::fetch_json::<SearchResponse>(&url) {
             Ok(json.result.into_filtered(&hidden_types, &hidden_terms))
         } else {
             Ok(MangaPageResult { entries: vec![], has_next_page: false })
@@ -186,8 +190,7 @@ impl MangaProvider for Comix {
                                     &includes[]=publisher",
                 API_URL, manga.key
             );
-            let res = Request::get(&url).send()?;
-            if let Ok(json) = serde_json::from_slice::<SingleMangaResponse>(&res.body) {
+            if let Ok(json) = web::ComixWebView::fetch_json::<SingleMangaResponse>(&url) {
                 let updated: Manga = json.result.into();
                 manga.title = updated.title;
                 manga.cover = updated.cover;
@@ -217,8 +220,7 @@ impl MangaProvider for Comix {
                     API_URL, manga.key, limit, page, time, token
                 );
 
-                let res = Request::get(&url).send()?;
-                if let Ok(json) = serde_json::from_slice::<ChapterDetailsResponse>(&res.body) {
+                if let Ok(json) = web::ComixWebView::fetch_json::<ChapterDetailsResponse>(&url) {
                     let items = json.result.items;
 
                     if deduplicate {
@@ -229,7 +231,7 @@ impl MangaProvider for Comix {
                         chapter_list.extend(items);
                     }
 
-                    if json.result.pagination.current_page >= json.result.pagination.last_page {
+                    if json.result.meta.page >= json.result.meta.last_page {
                         break;
                     }
                     page += 1;
@@ -268,14 +270,89 @@ impl MangaProvider for Comix {
 
     fn get_page_list(_manga: Manga, chapter: Chapter) -> Result<Vec<Page>> {
         let url = format!("{}/chapters/{}", API_URL, chapter.key);
-        let res = Request::get(&url).send()?;
-        if let Ok(json) = serde_json::from_slice::<ChapterResponse>(&res.body) {
+        if let Ok(json) = web::ComixWebView::fetch_json::<ChapterResponse>(&url) {
             if let Some(result) = json.result {
-                return Ok(result.images.into_iter().enumerate().map(|(i, img)| img.into_page(i as i32)).collect());
+                return Ok(result.get_images().into_iter().enumerate().map(|(i, img)| {
+                    let is_scrambled = img.s == Some(1);
+                    let img_w = img.width;
+                    let img_h = img.height;
+                    let mut page = img.into_page(i as i32);
+                    // prefix with ito://com.kunihir0.comix/ so ItoRunner intercepts it via handle_image
+                    if let PageContent::Url(u) = &page.content {
+                        let separator = if u.contains('?') { "&" } else { "?" };
+                        let scrambled_flag = if is_scrambled { format!("{}ito_scrambled=1&ito_w={}&ito_h={}", separator, img_w, img_h) } else { "".to_string() };
+                        let intercept_url = format!("ito://com.kunihir0.comix/{}{}", u, scrambled_flag);
+                        page.content = PageContent::Url(intercept_url);
+                    }
+                    page
+                }).collect());
             }
         }
         Ok(vec![])
     }
+
+    fn handle_url(_url: String) -> Result<ito_rs::models::LinkValue> {
+        Err(ito_rs::Error::Unsupported)
+    }
+
+    fn handle_image(url: String) -> Result<Vec<u8>> {
+        let mut actual_url = url.replace("ito://com.kunihir0.comix/", "");
+        let is_scrambled = actual_url.contains("ito_scrambled=1");
+        
+        let mut width = 1000.0;
+        let mut height = 1000.0;
+
+        if is_scrambled {
+            if let Some(w_start) = actual_url.find("ito_w=") {
+                let w_str = actual_url[w_start + 6..].split('&').next().unwrap_or("");
+                width = w_str.parse().unwrap_or(1000.0);
+                actual_url = actual_url.replace(&format!("ito_w={}", w_str), "");
+            }
+            if let Some(h_start) = actual_url.find("ito_h=") {
+                let h_str = actual_url[h_start + 6..].split('&').next().unwrap_or("");
+                height = h_str.parse().unwrap_or(1000.0);
+                actual_url = actual_url.replace(&format!("ito_h={}", h_str), "");
+            }
+            actual_url = actual_url.replace("ito_scrambled=1", "").replace("?&", "?").replace("&&", "&");
+            actual_url = actual_url.trim_end_matches('?').trim_end_matches('&').to_string();
+
+            // Execute descrambler directly
+            if let Ok(data_uri) = web::ComixWebView::descramble_image(width, height, &actual_url) {
+                if let Some((_, base64_data)) = data_uri.split_once(',') {
+                    if let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(base64_data) {
+                        return Ok(bytes);
+                    }
+                }
+            }
+            return Err(ito_rs::Error::Unsupported);
+        }
+
+        let res = Request::get(&actual_url).send()?;
+        let headers = res.headers;
+        if let Some(x_enc) = headers.get("x-enc") {
+            if x_enc == "1" {
+                // Execute descrambler
+                if let Ok(data_uri) = web::ComixWebView::descramble_image(width, height, &actual_url) {
+                    if let Some((_, base64_data)) = data_uri.split_once(',') {
+                        if let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(base64_data) {
+                            return Ok(bytes);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(res.body)
+    }
 }
 
 export_manga_plugin!(Comix);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn test_hash() {
+        let token = hash::generate_hash("/api/v1/manga/w0wj9/chapters", 0, 1);
+        println!("TOKEN: {}", token);
+        assert_eq!(token, "8DseLn4JBMOTpz9Uvea0EKFQ1kaphg7rIsmQzZcaHL4y0vSZ8VXvcCHijle644TzLa011_n3H2s");
+    }
+}

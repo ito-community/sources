@@ -5,7 +5,33 @@ use serde::{Deserialize, Deserializer, de};
 
 #[derive(Deserialize)]
 pub struct SearchResponse {
-	pub result: MangaItems,
+	pub result: MangaItemsResult,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum MangaItemsResult {
+	Object(MangaItems),
+	Array(Vec<ComixManga>),
+}
+
+impl MangaItemsResult {
+	pub fn into_items(self) -> Vec<ComixManga> {
+		match self {
+			Self::Object(o) => o.items,
+			Self::Array(a) => a,
+		}
+	}
+
+	pub fn into_filtered(self, content_types: &[String], hidden_terms: &[i32]) -> PageResult {
+		match self {
+			Self::Object(o) => o.into_filtered(content_types, hidden_terms),
+			Self::Array(a) => PageResult {
+				entries: a.into_iter().filter(|m| !m.is_hidden(content_types, hidden_terms)).map(Into::into).collect(),
+				has_next_page: false,
+			},
+		}
+	}
 }
 
 #[derive(Deserialize)]
@@ -72,7 +98,15 @@ impl From<MangaItems> for PageResult {
 #[derive(Deserialize)]
 pub struct ChapterItems {
 	pub items: Vec<ComixChapter>,
-	pub pagination: Pagination,
+	#[serde(alias = "pagination")]
+	pub meta: ChapterMeta,
+}
+
+#[derive(Deserialize)]
+pub struct ChapterMeta {
+	pub page: i32,
+	#[serde(rename = "lastPage", alias = "last_page")]
+	pub last_page: i32,
 }
 
 #[derive(Deserialize)]
@@ -82,12 +116,16 @@ pub struct TermItems {
 
 #[derive(Deserialize)]
 pub struct ComixManga {
+	#[serde(alias = "hid")]
 	pub hash_id: String,
 	pub title: String,
 	pub synopsis: Option<String>,
+	#[serde(default)]
 	pub r#type: String,
 	pub poster: Poster,
+	#[serde(default)]
 	pub status: String,
+	#[serde(default)]
 	pub is_nsfw: bool,
 	pub author: Option<Vec<Term>>,
 	pub artist: Option<Vec<Term>>,
@@ -121,9 +159,9 @@ impl From<ComixManga> for Manga {
 			key: value.hash_id,
 			title: value.title,
 			cover: match settings::image_quality().as_str() {
-				"small" => Some(value.poster.small),
-				"medium" => Some(value.poster.medium),
-				"large" => Some(value.poster.large),
+				"small" => value.poster.small.clone().or_else(|| value.poster.medium.clone()).or_else(|| value.poster.large.clone()),
+				"medium" => value.poster.medium.clone().or_else(|| value.poster.large.clone()).or_else(|| value.poster.small.clone()),
+				"large" => value.poster.large.clone().or_else(|| value.poster.medium.clone()).or_else(|| value.poster.small.clone()),
 				_ => None,
 			},
 			artist: value
@@ -163,14 +201,20 @@ impl From<ComixManga> for Manga {
 
 #[derive(Deserialize, Clone)]
 pub struct ComixChapter {
+	#[serde(alias = "id")]
 	pub chapter_id: i32,
-	pub scanlation_group_id: i32,
+	#[serde(alias = "groupId")]
+	pub scanlation_group_id: Option<i32>,
 	pub number: f32,
+	#[serde(default)]
 	pub name: String,
+	#[serde(default)]
 	pub votes: i32,
+	#[serde(default)]
 	pub updated_at: i64,
+	#[serde(alias = "group")]
 	pub scanlation_group: Option<ScanlationGroup>,
-	#[serde(deserialize_with = "bool_from_any")]
+	#[serde(alias = "isOfficial", deserialize_with = "bool_from_any")]
 	pub is_official: bool,
 }
 
@@ -198,14 +242,32 @@ impl ComixChapter {
 
 #[derive(Deserialize)]
 pub struct ComixChapterWithImages {
-	pub images: Vec<Image>,
+	pub images: Option<Vec<Image>>,
+	#[serde(alias = "pages")]
+	pub pages: Option<PageItems>,
 }
 
 #[derive(Deserialize)]
+pub struct PageItems {
+	pub items: Vec<Image>,
+}
+
+impl ComixChapterWithImages {
+	pub fn get_images(self) -> Vec<Image> {
+		if let Some(p) = self.pages {
+			p.items
+		} else {
+			self.images.unwrap_or_default()
+		}
+	}
+}
+
+
+#[derive(Deserialize)]
 pub struct Poster {
-	pub small: String,
-	pub medium: String,
-	pub large: String,
+	pub small: Option<String>,
+	pub medium: Option<String>,
+	pub large: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -222,6 +284,9 @@ pub struct ScanlationGroup {
 #[derive(Deserialize)]
 pub struct Image {
 	pub url: String,
+	pub s: Option<i32>,
+	pub width: f32,
+	pub height: f32,
 }
 
 impl Image {
