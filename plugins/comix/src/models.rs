@@ -49,10 +49,7 @@ pub struct ChapterResponse {
 	pub result: Option<ComixChapterWithImages>,
 }
 
-#[derive(Deserialize)]
-pub struct TermResponse {
-	pub result: TermItems,
-}
+
 
 #[derive(Deserialize)]
 pub struct Pagination {
@@ -109,10 +106,7 @@ pub struct ChapterMeta {
 	pub last_page: i32,
 }
 
-#[derive(Deserialize)]
-pub struct TermItems {
-	pub items: Vec<Term>,
-}
+
 
 #[derive(Deserialize)]
 pub struct ComixManga {

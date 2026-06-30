@@ -159,11 +159,11 @@ impl MangaProvider for Atsumaru {
     }
 
     fn get_search_manga_list(
-        query: String,
+        query: &str,
         page: i32,
         _filters: Vec<FilterItem>,
     ) -> Result<MangaPageResult> {
-        let q = if query.is_empty() { "*".to_string() } else { query };
+        let q = if query.is_empty() { "*".to_string() } else { query.to_string() };
         Self::fetch_search(&q, page, 24, "views:desc") // hardcode sort for demo
     }
 
@@ -240,8 +240,7 @@ impl MangaProvider for Atsumaru {
                         let chapter_url = format!("{}/read/{}?chapterId={}", BASE_URL, manga.key, chap.id);
                         let scanlator_name = chap.scanlation_manga_id
                             .as_ref()
-                            .and_then(|id| scanlator_map.get(id))
-                            .map(|s| s.clone());
+                            .and_then(|id| scanlator_map.get(id)).cloned();
                         
                         chapters.push(Chapter {
                             key: chap.id.clone(),

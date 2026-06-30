@@ -109,6 +109,7 @@ pub struct InfiniteResponse {
     pub items: Vec<InfiniteItem>,
 }
 
+#[allow(dead_code)]
 #[derive(serde::Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct InfiniteItem {

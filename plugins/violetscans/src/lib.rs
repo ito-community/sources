@@ -30,28 +30,25 @@ impl VioletScans {
 
         if let Ok(items) = html.select(".bsx") {
             for item in items {
-                if let Ok(a_nodes) = item.select("a") {
-                    if let Some(a_node) = a_nodes.first() {
+                if let Ok(a_nodes) = item.select("a")
+                    && let Some(a_node) = a_nodes.first() {
                         let url = a_node.attr("href")?.unwrap_or_default();
                         let mut title = a_node.attr("title")?.unwrap_or_default();
                         
-                        if title.is_empty() {
-                            if let Ok(tt_nodes) = item.select(".tt") {
-                                if let Some(tt) = tt_nodes.first() {
+                        if title.is_empty()
+                            && let Ok(tt_nodes) = item.select(".tt")
+                                && let Some(tt) = tt_nodes.first() {
                                     title = tt.text()?.trim().to_string();
                                 }
-                            }
-                        }
                         
                         let mut cover = String::new();
-                        if let Ok(img_nodes) = item.select("img") {
-                            if let Some(img) = img_nodes.first() {
+                        if let Ok(img_nodes) = item.select("img")
+                            && let Some(img) = img_nodes.first() {
                                 cover = img.attr("src")?.unwrap_or_default();
                                 if cover.is_empty() {
                                     cover = img.attr("data-src")?.unwrap_or_default();
                                 }
                             }
-                        }
 
                         if !url.is_empty() {
                             let key = url.replace(BASE_URL, "").replace("/comics/", "").replace("/manga/", "").replace("/", "");
@@ -72,7 +69,6 @@ impl VioletScans {
                             });
                         }
                     }
-                }
             }
         }
 
@@ -82,12 +78,12 @@ impl VioletScans {
 
 impl MangaProvider for VioletScans {
     fn get_search_manga_list(
-        query: String,
+        query: &str,
         page: i32,
         _filters: Vec<FilterItem>,
     ) -> Result<PageResult> {
         if !query.is_empty() {
-            let url = format!("{}/?s={}", BASE_URL, Self::urlencode(&query));
+            let url = format!("{}/?s={}", BASE_URL, Self::urlencode(query));
             let res = Request::get(&url).send()?;
             let html = Node::new(&res.body);
             Self::parse_manga_list(&html)
@@ -121,25 +117,21 @@ impl MangaProvider for VioletScans {
         let html = Node::new(&res.body);
         
         if needs_details {
-            if let Ok(nodes) = html.select("h1.entry-title") {
-                if let Some(node) = nodes.first() {
+            if let Ok(nodes) = html.select("h1.entry-title")
+                && let Some(node) = nodes.first() {
                     manga.title = node.text()?;
                 }
-            }
             
-            if let Ok(nodes) = html.select(".thumb img") {
-                if let Some(node) = nodes.first() {
-                    if let Ok(Some(src)) = node.attr("src") {
+            if let Ok(nodes) = html.select(".thumb img")
+                && let Some(node) = nodes.first()
+                    && let Ok(Some(src)) = node.attr("src") {
                         manga.cover = Some(src);
                     }
-                }
-            }
             
-            if let Ok(nodes) = html.select(".entry-content p") {
-                if let Some(node) = nodes.first() {
+            if let Ok(nodes) = html.select(".entry-content p")
+                && let Some(node) = nodes.first() {
                     manga.description = Some(node.text()?);
                 }
-            }
             
             manga.url = Some(url.clone());
             manga.viewer = Viewer::Webtoon;
@@ -148,14 +140,13 @@ impl MangaProvider for VioletScans {
                 for item in items {
                     let text = item.text().unwrap_or_default();
                     if text.contains("Author") {
-                        if let Ok(i_nodes) = item.select("i") {
-                            if let Some(i_node) = i_nodes.first() {
+                        if let Ok(i_nodes) = item.select("i")
+                            && let Some(i_node) = i_nodes.first() {
                                 manga.authors = Some(vec![i_node.text()?]);
                             }
-                        }
-                    } else if text.contains("Status") {
-                        if let Ok(i_nodes) = item.select("i") {
-                            if let Some(i_node) = i_nodes.first() {
+                    } else if text.contains("Status")
+                        && let Ok(i_nodes) = item.select("i")
+                            && let Some(i_node) = i_nodes.first() {
                                 let s = i_node.text()?;
                                 let s_lower = s.to_lowercase();
                                 manga.status = if s_lower.contains("ongoing") {
@@ -170,8 +161,6 @@ impl MangaProvider for VioletScans {
                                     Status::Unknown
                                 };
                             }
-                        }
-                    }
                 }
             }
             
@@ -195,20 +184,18 @@ impl MangaProvider for VioletScans {
                 for item in chbox_nodes {
                     let mut chapter_url = String::new();
                     
-                    if let Ok(a_nodes) = item.select("a") {
-                        if let Some(a_tag) = a_nodes.first() {
+                    if let Ok(a_nodes) = item.select("a")
+                        && let Some(a_tag) = a_nodes.first() {
                             chapter_url = a_tag.attr("href")?.unwrap_or_default();
                         }
-                    }
                     
                     let key = chapter_url.replace(BASE_URL, "").replace("/", "");
                     
                     let mut title = None;
-                    if let Ok(nodes) = item.select(".chapternum") {
-                        if let Some(node) = nodes.first() {
+                    if let Ok(nodes) = item.select(".chapternum")
+                        && let Some(node) = nodes.first() {
                             title = Some(node.text()?);
                         }
-                    }
                     
                     chapters.push(Chapter {
                         key,
@@ -270,11 +257,11 @@ impl MangaProvider for VioletScans {
         let mut featured_mangas = Vec::new();
         if let Ok(slides) = html.select(".slidernew .swiper-slide") {
             for item in slides {
-                if let Ok(a_nodes) = item.select("a") {
-                    if let Some(a) = a_nodes.first() {
+                if let Ok(a_nodes) = item.select("a")
+                    && let Some(a) = a_nodes.first() {
                         let url = a.attr("href")?.unwrap_or_default();
-                        if let Ok(img_nodes) = a.select("img") {
-                            if let Some(img) = img_nodes.first() {
+                        if let Ok(img_nodes) = a.select("img")
+                            && let Some(img) = img_nodes.first() {
                                 let cover = img.attr("src")?.unwrap_or_default();
                                 let title = img.attr("alt")?.unwrap_or_default();
                                 if !url.is_empty() {
@@ -296,9 +283,7 @@ impl MangaProvider for VioletScans {
                                     });
                                 }
                             }
-                        }
                     }
-                }
             }
         }
         
@@ -313,33 +298,30 @@ impl MangaProvider for VioletScans {
         // Parse bixbox sections (Popular Today, New Series, Latest Update)
         if let Ok(bixboxes) = html.select(".bixbox") {
             for bixbox in bixboxes {
-                if let Ok(h2_nodes) = bixbox.select("h2") {
-                    if let Some(h2) = h2_nodes.first() {
-                        if let Ok(title_text) = h2.text() {
+                if let Ok(h2_nodes) = bixbox.select("h2")
+                    && let Some(h2) = h2_nodes.first()
+                        && let Ok(title_text) = h2.text() {
                             let mut entries = Vec::new();
                             if let Ok(items) = bixbox.select(".bsx") {
                                 for item in items {
-                                    if let Ok(a_nodes) = item.select("a") {
-                                        if let Some(a) = a_nodes.first() {
+                                    if let Ok(a_nodes) = item.select("a")
+                                        && let Some(a) = a_nodes.first() {
                                             let url = a.attr("href")?.unwrap_or_default();
                                             let mut manga_title = a.attr("title")?.unwrap_or_default();
-                                            if manga_title.is_empty() {
-                                                if let Ok(tt_nodes) = item.select(".tt") {
-                                                    if let Some(tt) = tt_nodes.first() {
+                                            if manga_title.is_empty()
+                                                && let Ok(tt_nodes) = item.select(".tt")
+                                                    && let Some(tt) = tt_nodes.first() {
                                                         manga_title = tt.text()?.trim().to_string();
                                                     }
-                                                }
-                                            }
                                             
                                             let mut cover = String::new();
-                                            if let Ok(img_nodes) = item.select("img") {
-                                                if let Some(img) = img_nodes.first() {
+                                            if let Ok(img_nodes) = item.select("img")
+                                                && let Some(img) = img_nodes.first() {
                                                     cover = img.attr("src")?.unwrap_or_default();
                                                     if cover.is_empty() {
                                                         cover = img.attr("data-src")?.unwrap_or_default();
                                                     }
                                                 }
-                                            }
 
                                             if !url.is_empty() {
                                                 let key = url.replace(BASE_URL, "").replace("/comics/", "").replace("/manga/", "").replace("/", "");
@@ -360,7 +342,6 @@ impl MangaProvider for VioletScans {
                                                 });
                                             }
                                         }
-                                    }
                                 }
                             }
                             
@@ -384,8 +365,6 @@ impl MangaProvider for VioletScans {
                                 });
                             }
                         }
-                    }
-                }
             }
         }
 

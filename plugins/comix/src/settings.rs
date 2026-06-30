@@ -17,6 +17,3 @@ pub fn hidden_types() -> Vec<String> {
 pub fn hidden_terms() -> Vec<i32> {
 	Vec::new()
 }
-
-pub fn reset_filters() {
-}

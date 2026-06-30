@@ -4,7 +4,7 @@ pub struct VrfGenerator;
 
 impl VrfGenerator {
 	fn atob(data: &str) -> Vec<u8> {
-		general_purpose::STANDARD.decode(data).unwrap()
+		general_purpose::STANDARD.decode(data).unwrap_or_default()
 	}
 
 	fn btoa(data: &[u8]) -> String {

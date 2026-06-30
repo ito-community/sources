@@ -38,8 +38,8 @@ impl MangaFire {
                 if let Some(title_el) = el.select(".info > a")?.first() {
                     let title = title_el.text()?;
                     if let Some(href) = title_el.attr("href")? {
-                        let key = if href.starts_with(BASE_URL) {
-                            href[BASE_URL.len()..].to_string()
+                        let key = if let Some(stripped) = href.strip_prefix(BASE_URL) {
+                            stripped.to_string()
                         } else {
                             href
                         };
@@ -64,10 +64,8 @@ impl MangaFire {
             }
         }
 
-        let has_next_page = html
-            .select(".page-item.active + .page-item .page-link")?
-            .first()
-            .is_some();
+        let has_next_page = !html
+            .select(".page-item.active + .page-item .page-link")?.is_empty();
 
         Ok(PageResult { entries, has_next_page })
     }
@@ -101,12 +99,12 @@ impl MangaProvider for MangaFire {
         })
     }
 
-    fn handle_url(url: String) -> Result<LinkValue> {
+    fn handle_url(url: &str) -> Result<LinkValue> {
         if url.contains("/manga/") {
             let key = if let Some(idx) = url.find("/manga/") {
                 url[idx..].to_string()
             } else {
-                url.clone()
+                url.to_string()
             };
             Ok(LinkValue::Manga(Manga {
                 key,
@@ -116,7 +114,7 @@ impl MangaProvider for MangaFire {
                 description: None,
                 tags: None,
                 cover: None,
-                url: Some(url),
+                url: Some(url.to_string()),
                 status: Status::Unknown,
                 content_rating: ContentRating::Safe,
                 nsfw: 0,
@@ -144,10 +142,10 @@ impl MangaProvider for MangaFire {
         if let Ok(nodes) = html.select(".trending .swiper-wrapper .swiper-slide") {
             let mut entries = Vec::new();
             for el in nodes {
-                if let Some(link) = el.select(".info .above a")?.first() {
-                    if let Some(href) = link.attr("href")? {
-                        let key = if href.starts_with(BASE_URL) {
-                            href[BASE_URL.len()..].to_string()
+                if let Some(link) = el.select(".info .above a")?.first()
+                    && let Some(href) = link.attr("href")? {
+                        let key = if let Some(stripped) = href.strip_prefix(BASE_URL) {
+                            stripped.to_string()
                         } else {
                             href
                         };
@@ -167,7 +165,6 @@ impl MangaProvider for MangaFire {
                             chapters: None,
                         });
                     }
-                }
             }
             if !entries.is_empty() {
                 components.push(HomeComponent {
@@ -182,10 +179,10 @@ impl MangaProvider for MangaFire {
         if let Ok(nodes) = html.select("#most-viewed .swiper-wrapper .swiper-slide") {
             let mut entries = Vec::new();
             for el in nodes {
-                if let Some(link) = el.select("a")?.first() {
-                    if let Some(href) = link.attr("href")? {
-                        let key = if href.starts_with(BASE_URL) {
-                            href[BASE_URL.len()..].to_string()
+                if let Some(link) = el.select("a")?.first()
+                    && let Some(href) = link.attr("href")? {
+                        let key = if let Some(stripped) = href.strip_prefix(BASE_URL) {
+                            stripped.to_string()
                         } else {
                             href
                         };
@@ -205,7 +202,6 @@ impl MangaProvider for MangaFire {
                             chapters: None,
                         });
                     }
-                }
             }
             if !entries.is_empty() {
                 components.push(HomeComponent {
@@ -220,10 +216,10 @@ impl MangaProvider for MangaFire {
         if let Ok(nodes) = html.select("section .tab-content .original .unit") {
             let mut entries = Vec::new();
             for el in nodes {
-                if let (Some(link), Some(chapter_el)) = (el.select("a")?.first(), el.select("ul.content li")?.first()) {
-                    if let Some(href) = link.attr("href")? {
-                        let key = if href.starts_with(BASE_URL) {
-                            href[BASE_URL.len()..].to_string()
+                if let (Some(link), Some(chapter_el)) = (el.select("a")?.first(), el.select("ul.content li")?.first())
+                    && let Some(href) = link.attr("href")? {
+                        let key = if let Some(stripped) = href.strip_prefix(BASE_URL) {
+                            stripped.to_string()
                         } else {
                             href
                         };
@@ -261,7 +257,6 @@ impl MangaProvider for MangaFire {
                             },
                         });
                     }
-                }
             }
             if !entries.is_empty() {
                 components.push(HomeComponent {
@@ -301,8 +296,8 @@ impl MangaProvider for MangaFire {
         Ok(PageResult { entries, has_next_page })
     }
 
-    fn get_search_manga_list(query: String, page: i32, _filters: Vec<FilterItem>) -> Result<PageResult> {
-        let vrf = VrfGenerator::generate(&query);
+    fn get_search_manga_list(query: &str, page: i32, _filters: Vec<FilterItem>) -> Result<PageResult> {
+        let vrf = VrfGenerator::generate(query);
         let mut entries = Vec::new();
         let mut has_next_page = false;
 
@@ -383,7 +378,7 @@ impl MangaProvider for MangaFire {
                 let html_read = Node::new(ajax_read.result.html.as_bytes());
                 let read_list = html_read.select("ul a")?;
 
-                for (m, r) in manga_list.into_iter().zip(read_list.into_iter()) {
+                for (m, r) in manga_list.into_iter().zip(read_list) {
                     if let (Some(data_id), Some(number)) = (r.attr("data-id")?, m.attr("data-number")?) {
                         let key = format!("chapter/{}", data_id);
                         let href = r.attr("href")?.unwrap_or_default();

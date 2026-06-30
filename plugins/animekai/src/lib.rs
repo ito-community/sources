@@ -52,13 +52,11 @@ impl AnimeKaiProvider {
             .body(&body)
             .send().ok()?;
 
-        if res.status == 200 {
-            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&res.body) {
-                if json.get("status").and_then(|s| s.as_i64()) == Some(200) {
+        if res.status == 200
+            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&res.body)
+                && json.get("status").and_then(|s| s.as_i64()) == Some(200) {
                     return json.get("result").cloned();
                 }
-            }
-        }
         None
     }
     
@@ -74,21 +72,16 @@ impl AnimeKaiProvider {
             .body(&body)
             .send().ok()?;
 
-        if res.status == 200 {
-            if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&res.body) {
-                if json.get("status").and_then(|s| s.as_i64()) == Some(200) {
-                    if let Some(result) = json.get("result") {
-                        if result.is_string() {
-                            let result_str = result.as_str().unwrap();
-                            if let Ok(parsed_result) = serde_json::from_str::<serde_json::Value>(result_str) {
+        if res.status == 200
+            && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&res.body)
+                && json.get("status").and_then(|s| s.as_i64()) == Some(200)
+                    && let Some(result) = json.get("result") {
+                        if let Some(result_str) = result.as_str()
+                            && let Ok(parsed_result) = serde_json::from_str::<serde_json::Value>(result_str) {
                                 return Some(parsed_result);
-                            }
                         }
                         return Some(result.clone());
                     }
-                }
-            }
-        }
         None
     }
 
@@ -103,8 +96,7 @@ impl AnimeKaiProvider {
                     encoded.push('+');
                 }
                 _ => {
-                    use std::fmt::Write;
-                    write!(&mut encoded, "%{:02X}", b).unwrap();
+                    encoded.push_str(&format!("%{:02X}", b));
                 }
             }
         }
@@ -131,16 +123,14 @@ impl AnimeKaiProvider {
         let mut cover = item.select("img")?.first().and_then(|img| img.attr("data-src").ok().flatten())
             .or(item.select("img")?.first().and_then(|img| img.attr("src").ok().flatten()));
 
-        if cover.is_none() {
-            if let Some(style) = item.attr("style")? {
-                if let Some(start) = style.find("url(") {
+        if cover.is_none()
+            && let Some(style) = item.attr("style")?
+                && let Some(start) = style.find("url(") {
                     let rest = &style[start + 4..];
                     if let Some(end) = rest.find(')') {
                         cover = Some(rest[..end].trim_matches(|c| c == '\'' || c == '"').to_string());
                     }
                 }
-            }
-        }
 
         Ok(Anime {
             key: slug.clone(),
@@ -185,16 +175,14 @@ impl AnimeProvider for AnimeKaiProvider {
                     if let Some(desc_node) = slide.select(".detail p.desc")?.into_iter().next() {
                         anime.description = Some(desc_node.text()?);
                     }
-                    if anime.cover.is_none() {
-                        if let Some(style) = slide.attr("style")? {
-                            if let Some(start) = style.find("url(") {
+                    if anime.cover.is_none()
+                        && let Some(style) = slide.attr("style")?
+                            && let Some(start) = style.find("url(") {
                                 let rest = &style[start + 4..];
                                 if let Some(end) = rest.find(')') {
                                     anime.cover = Some(rest[..end].trim_matches(|c| c == '\'' || c == '"').to_string());
                                 }
                             }
-                        }
-                    }
                     entries.push(anime);
                 }
             }
@@ -265,11 +253,11 @@ impl AnimeProvider for AnimeKaiProvider {
         })
     }
 
-    fn get_search_anime_list(query: String, _page: i32, _filters: Vec<FilterItem>) -> Result<PageResult> {
+    fn get_search_anime_list(query: &str, _page: i32, _filters: Vec<FilterItem>) -> Result<PageResult> {
         let search_url = format!(
             "{}/ajax/anime/search?keyword={}",
             BASE_URL,
-            Self::url_encode(&query)
+            Self::url_encode(query)
         );
 
         let res = Request::get(&search_url)
@@ -285,15 +273,14 @@ impl AnimeProvider for AnimeKaiProvider {
         }
 
         let mut entries = Vec::new();
-        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&res.body) {
-            if let Some(html) = json.get("result").and_then(|r| r.get("html")).and_then(|h| h.as_str()) {
+        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&res.body)
+            && let Some(html) = json.get("result").and_then(|r| r.get("html")).and_then(|h| h.as_str()) {
                 let document = Node::new(html.as_bytes());
                 let items = document.select("a.aitem")?;
                 for item in items {
                     entries.push(Self::parse_anime_item(&item)?);
                 }
             }
-        }
 
         Ok(PageResult {
             entries,
@@ -382,31 +369,29 @@ impl AnimeProvider for AnimeKaiProvider {
 
         if needs_episodes {
             let mut ani_id = String::new();
-            if let Some(start) = body_str.find(r#"id="syncData""#) {
-                if let Some(end) = body_str[start..].find("</script>") {
+            if let Some(start) = body_str.find(r#"id="syncData""#)
+                && let Some(end) = body_str[start..].find("</script>") {
                     let script_content = &body_str[start..start + end];
                     if let Some(json_start) = script_content.find('>') {
                         let json_str = script_content[json_start + 1..].trim();
-                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
-                            if let Some(id) = json.get("anime_id").and_then(|v| v.as_str()) {
+                        if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str)
+                            && let Some(id) = json.get("anime_id").and_then(|v| v.as_str()) {
                                 ani_id = id.to_string();
                             }
-                        }
                     }
                 }
-            }
 
-            if !ani_id.is_empty() {
-                if let Some(encoded) = Self::encode_token(&ani_id) {
+            if !ani_id.is_empty()
+                && let Some(encoded) = Self::encode_token(&ani_id) {
                     let ep_list_url = format!("{}/ajax/episodes/list?ani_id={}&_={}", BASE_URL, ani_id, encoded);
                     let ep_res = Request::get(&ep_list_url)
                         .header("X-Requested-With", "XMLHttpRequest")
                         .header("Referer", &format!("{}/", BASE_URL))
                         .send()?;
                     
-                    if ep_res.status == 200 {
-                        if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ep_res.body) {
-                            if let Some(html) = json.get("result").and_then(|r| r.as_str()) {
+                    if ep_res.status == 200
+                        && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ep_res.body)
+                            && let Some(html) = json.get("result").and_then(|r| r.as_str()) {
                                 let ep_doc = Node::new(html.as_bytes());
                                 let mut episodes = Vec::new();
                                 for node in ep_doc.select("a")? {
@@ -429,10 +414,7 @@ impl AnimeProvider for AnimeKaiProvider {
                                     anime.episodes = Some(episodes);
                                 }
                             }
-                        }
-                    }
                 }
-            }
         }
 
         Ok(anime)
@@ -453,9 +435,9 @@ impl AnimeProvider for AnimeKaiProvider {
                 .header("Referer", &format!("{}/", BASE_URL))
                 .send()?;
 
-            if res.status == 200 {
-                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&res.body) {
-                    if let Some(html) = json.get("result").and_then(|r| r.as_str()) {
+            if res.status == 200
+                && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&res.body)
+                    && let Some(html) = json.get("result").and_then(|r| r.as_str()) {
                         let document = Node::new(html.as_bytes());
                         let groups = document.select(".server-items")?;
 
@@ -467,8 +449,8 @@ impl AnimeProvider for AnimeKaiProvider {
                                 let link_id = server.attr("data-lid")?.unwrap_or_default();
                                 let server_name = server.text()?.trim().to_string();
 
-                                if !link_id.is_empty() {
-                                    if let Some(encoded_link) = Self::encode_token(&link_id) {
+                                if !link_id.is_empty()
+                                    && let Some(encoded_link) = Self::encode_token(&link_id) {
                                         let view_url = format!(
                                             "{}/ajax/links/view?id={}&_={}",
                                             BASE_URL, link_id, encoded_link
@@ -478,17 +460,17 @@ impl AnimeProvider for AnimeKaiProvider {
                                             .header("Referer", &format!("{}/", BASE_URL))
                                             .send()?;
 
-                                        if view_res.status == 200 {
-                                            if let Ok(view_json) = serde_json::from_slice::<serde_json::Value>(&view_res.body) {
-                                                if let Some(encrypted_res) = view_json.get("result").and_then(|r| r.as_str()) {
+                                        if view_res.status == 200
+                                            && let Ok(view_json) = serde_json::from_slice::<serde_json::Value>(&view_res.body)
+                                                && let Some(encrypted_res) = view_json.get("result").and_then(|r| r.as_str()) {
                                                     let mut embed_data = Self::decode_kai(encrypted_res);
                                                     if embed_data.is_none() {
                                                         let ua = view_res.headers.get("X-Used-User-Agent").map(|s| s.as_str());
                                                         embed_data = Self::decode_mega(encrypted_res, ua);
                                                     }
                                                     
-                                                    if let Some(data) = embed_data {
-                                                        if let Some(embed_url) = data.get("url").and_then(|u| u.as_str()) {
+                                                    if let Some(data) = embed_data
+                                                        && let Some(embed_url) = data.get("url").and_then(|u| u.as_str()) {
                                                             let quality_label = format!("{} ({})", server_name, lang);
 
                                                             if embed_url.contains("/e/") || embed_url.contains("megacloud") || embed_url.contains("rapid-cloud") {
@@ -511,7 +493,7 @@ impl AnimeProvider for AnimeKaiProvider {
                                                                     }
                                                                 } else {
                                                                     let mut fallback_success = false;
-                                                                    let video_id = embed_url.trim_end_matches('/').split('/').last().unwrap_or_default();
+                                                                    let video_id = embed_url.trim_end_matches('/').split('/').next_back().unwrap_or_default();
                                                                     let embed_base = if embed_url.contains("/e/") {
                                                                         embed_url.split("/e/").next().unwrap_or_default()
                                                                     } else {
@@ -525,9 +507,9 @@ impl AnimeProvider for AnimeKaiProvider {
                                                                         .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
                                                                         .send() {
                                                                         ito_rs::host::print(&format!("[DEBUG-MEDIA] Media endpoint status: {}", m_res.status));
-                                                                        if m_res.status == 200 {
-                                                                            if let Ok(media_json) = serde_json::from_slice::<serde_json::Value>(&m_res.body) {
-                                                                                if let Some(encrypted_media) = media_json.get("result").and_then(|r| r.as_str()) {
+                                                                        if m_res.status == 200
+                                                                            && let Ok(media_json) = serde_json::from_slice::<serde_json::Value>(&m_res.body)
+                                                                                && let Some(encrypted_media) = media_json.get("result").and_then(|r| r.as_str()) {
                                                                                     ito_rs::host::print(&format!("[DEBUG-MEDIA] Got encrypted media payload (len {})", encrypted_media.len()));
                                                                                     
                                                                                     let mut user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36".to_string();
@@ -535,10 +517,10 @@ impl AnimeProvider for AnimeKaiProvider {
                                                                                         user_agent = ua.clone();
                                                                                     }
 
-                                                                                    if let Some(dec_data) = Self::decode_mega(encrypted_media, Some(&user_agent)) {
-                                                                                        if let Some(sources) = dec_data.get("sources").and_then(|s| s.as_array()) {
-                                                                                            if let Some(first_source) = sources.first() {
-                                                                                                if let Some(dec_url) = first_source.get("file").and_then(|f| f.as_str()) {
+                                                                                    if let Some(dec_data) = Self::decode_mega(encrypted_media, Some(&user_agent))
+                                                                                        && let Some(sources) = dec_data.get("sources").and_then(|s| s.as_array())
+                                                                                            && let Some(first_source) = sources.first()
+                                                                                                && let Some(dec_url) = first_source.get("file").and_then(|f| f.as_str()) {
                                                                                                     ito_rs::host::print(&format!("AnimeKai: Megacloud failed, but /media/ fallback worked: {}", dec_url));
 
                                                                                                     // Skip broken CDN nodes
@@ -576,12 +558,7 @@ impl AnimeProvider for AnimeKaiProvider {
                                                                                                         ito_rs::host::print(&format!("[DEBUG-MEDIA] Skipping fallback megaup.cc CDN (iOS TLS broken): {}", dec_url));
                                                                                                     }
                                                                                                 }
-                                                                                            }
-                                                                                        }
-                                                                                    }
                                                                                 }
-                                                                            }
-                                                                        }
                                                                     }
 
                                                                     if !fallback_success {
@@ -605,23 +582,17 @@ impl AnimeProvider for AnimeKaiProvider {
                                                                 });
                                                             }
                                                         }
-                                                    }
                                                 }
-                                            }
-                                        }
                                     }
-                                }
                             }
                         }
                     }
-                }
-            }
         }
 
         Ok(videos)
     }
 
-    fn handle_url(url: String) -> Result<LinkValue> {
+    fn handle_url(url: &str) -> Result<LinkValue> {
         if url.contains("/watch/") {
             let key = url.split("/watch/").last().unwrap_or_default().split('#').next().unwrap_or_default().to_string();
             Ok(LinkValue::Anime(Anime {
@@ -631,7 +602,7 @@ impl AnimeProvider for AnimeKaiProvider {
                 description: None,
                 tags: None,
                 cover: None,
-                url: Some(url),
+                url: Some(url.to_string()),
                 status: Status::Unknown,
                 content_rating: ContentRating::Safe,
                 nsfw: 0,
@@ -647,7 +618,7 @@ impl AnimeProvider for AnimeKaiProvider {
 // MARK: - MegaCloud Crypto Module
 mod megacloud {
     use ito_rs::net::Request;
-    use std::collections::HashMap;
+
 
     pub fn extract(embed_url: &str) -> Option<(String, Option<Vec<ito_rs::models::anime::Subtitle>>)> {
         ito_rs::host::print(&format!("[DEBUG-MEGACLOUD] Extracting from: {}", embed_url));
@@ -679,9 +650,9 @@ mod megacloud {
         let json: serde_json::Value = serde_json::from_slice(&sources_res.body).ok()?;
 
         // CHECK IF IT RETURNED HTML WITH ANOTHER PAGE DATA
-        if let Some(status) = json.get("status").and_then(|s| s.as_i64()) {
-            if status == 200 {
-                 if let Some(result_html) = json.get("result").and_then(|r| r.as_str()) {
+        if let Some(status) = json.get("status").and_then(|s| s.as_i64())
+            && status == 200
+                 && let Some(result_html) = json.get("result").and_then(|r| r.as_str()) {
                      ito_rs::host::print("[DEBUG-MEGACLOUD] getSources returned HTML, checking for inner __PAGE_DATA");
                      if let Some(inner_nonce) = extract_nonce(result_html) {
                          ito_rs::host::print(&format!("[DEBUG-MEGACLOUD] Found inner nonce: {}", inner_nonce));
@@ -702,13 +673,13 @@ mod megacloud {
                             .send().ok()?;
                          
                          ito_rs::host::print(&format!("[DEBUG-MEGACLOUD] dec-mega API status: {}", dec_mega_res.status));
-                         if dec_mega_res.status == 200 {
-                             if let Ok(mega_json) = serde_json::from_slice::<serde_json::Value>(&dec_mega_res.body) {
+                         if dec_mega_res.status == 200
+                             && let Ok(mega_json) = serde_json::from_slice::<serde_json::Value>(&dec_mega_res.body) {
                                  ito_rs::host::print(&format!("[DEBUG-MEGACLOUD] dec-mega response: {}", mega_json));
                                  if mega_json.get("status").and_then(|s| s.as_i64()) == Some(200) {
                                      if let Some(mega_result) = mega_json.get("result") {
-                                          let final_json = if mega_result.is_string() {
-                                              serde_json::from_str::<serde_json::Value>(mega_result.as_str().unwrap()).unwrap_or(mega_result.clone())
+                                          let final_json = if let Some(s) = mega_result.as_str() {
+                                              serde_json::from_str::<serde_json::Value>(s).unwrap_or_else(|_| mega_result.clone())
                                           } else {
                                               mega_result.clone()
                                           };
@@ -719,11 +690,8 @@ mod megacloud {
                                      ito_rs::host::print(&format!("[DEBUG-MEGACLOUD] dec-mega API error: {:?}", mega_json));
                                  }
                              }
-                         }
                      }
                  }
-            }
-        }
 
         extract_from_json(&json)
     }
@@ -738,14 +706,13 @@ mod megacloud {
                 if let Some(encrypted_base64) = json.get("sources").and_then(|s| s.as_str()) {
                     let keys_url = "https://raw.githubusercontent.com/yogesh-hacker/MegacloudKeys/refs/heads/main/keys.json";
                     let keys_res = Request::get(keys_url).send().ok()?;
-                    if let Ok(keys_json) = serde_json::from_slice::<serde_json::Value>(&keys_res.body) {
-                        if let Some(vidstr_key) = keys_json.get("vidstr").and_then(|k| k.as_str()) {
+                    if let Ok(keys_json) = serde_json::from_slice::<serde_json::Value>(&keys_res.body)
+                        && let Some(vidstr_key) = keys_json.get("vidstr").and_then(|k| k.as_str()) {
                             let decrypted = decrypt(encrypted_base64, "", vidstr_key);
                             if let Ok(parsed_decrypted) = serde_json::from_str::<serde_json::Value>(&decrypted) {
                                 final_sources = parsed_decrypted.as_array().cloned();
                             }
                         }
-                    }
                 }
             } else {
                 final_sources = json.get("sources").and_then(|s| s.as_array().cloned());
@@ -770,15 +737,13 @@ mod megacloud {
             }
         }
 
-        if let Some(sources) = final_sources {
-            if let Some(first_source) = sources.first() {
-                if let Some(file) = first_source.get("file").and_then(|f| f.as_str()) {
+        if let Some(sources) = final_sources
+            && let Some(first_source) = sources.first()
+                && let Some(file) = first_source.get("file").and_then(|f| f.as_str()) {
                     ito_rs::host::print(&format!("[DEBUG-MEGACLOUD] Found source file: {}", file));
                     let subs = if final_subtitles.is_empty() { None } else { Some(final_subtitles) };
                     return Some((file.to_string(), subs));
                 }
-            }
-        }
         
         None
     }
@@ -873,7 +838,7 @@ mod megacloud {
         let col_count = ikey.chars().count();
         if col_count == 0 { return src.to_string(); }
         let src_chars: Vec<char> = src.chars().collect();
-        let row_count = (src_chars.len() + col_count - 1) / col_count;
+        let row_count = src_chars.len().div_ceil(col_count);
         
         let mut grid = vec![vec![' '; col_count]; row_count];
         let mut sorted_map: Vec<(char, usize)> = ikey.chars().enumerate().map(|(i, c)| (c, i)).collect();
@@ -881,18 +846,18 @@ mod megacloud {
         
         let mut src_idx = 0;
         for &(_, orig_col) in &sorted_map {
-            for row in 0..row_count {
+            for item in grid.iter_mut().take(row_count) {
                 if src_idx < src_chars.len() {
-                    grid[row][orig_col] = src_chars[src_idx];
+                    item[orig_col] = src_chars[src_idx];
                     src_idx += 1;
                 }
             }
         }
         
         let mut result = String::with_capacity(src_chars.len());
-        for row in 0..row_count {
-            for col in 0..col_count {
-                result.push(grid[row][col]);
+        for item in grid.iter().take(row_count) {
+            for &c in item.iter().take(col_count) {
+                result.push(c);
             }
         }
         result
@@ -936,7 +901,7 @@ mod megacloud {
             Err(_) => return src.to_string(),
         };
 
-        let char_array: Vec<char> = (32..=126).filter_map(|i| std::char::from_u32(i)).collect();
+        let char_array: Vec<char> = (32..=126).filter_map(std::char::from_u32).collect();
 
         for iteration in (1..=layers).rev() {
             let layer_key = format!("{}{}", gen_key, iteration);
@@ -953,14 +918,14 @@ mod megacloud {
             };
             
             let mut dec_arr: Vec<char> = dec_str.chars().collect();
-            for i in 0..dec_arr.len() {
-                if let Some(c_idx) = char_array.iter().position(|&x| x == dec_arr[i]) {
+            for c in dec_arr.iter_mut() {
+                if let Some(c_idx) = char_array.iter().position(|&x| x == *c) {
                     let random_shift = seed_rand(95) as isize;
                     let mut new_idx = (c_idx as isize - random_shift) % 95;
                     if new_idx < 0 {
                         new_idx += 95;
                     }
-                    dec_arr[i] = char_array[new_idx as usize];
+                    *c = char_array[new_idx as usize];
                 }
             }
             

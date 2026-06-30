@@ -88,7 +88,7 @@ impl LuaComic {
 
 impl MangaProvider for LuaComic {
     fn get_search_manga_list(
-        query: String,
+        query: &str,
         page: i32,
         _filters: Vec<FilterItem>,
     ) -> Result<PageResult> {
@@ -101,7 +101,7 @@ impl MangaProvider for LuaComic {
         );
 
         if !query.is_empty() {
-            url.push_str(&format!("&query_string={}", Self::urlencode(&query)));
+            url.push_str(&format!("&query_string={}", Self::urlencode(query)));
         }
 
         let res = Request::get(&url)
@@ -205,36 +205,30 @@ impl MangaProvider for LuaComic {
     ) -> Result<Manga> {
         let url = format!("{}{}", BASE_URL, manga.key);
         
-        if needs_details {
-            if let Ok(res) = Request::get(&url).send() {
+        if needs_details
+            && let Ok(res) = Request::get(&url).send() {
                 let html = Node::new(&res.body);
                 
-                if let Ok(nodes) = html.select("h1.text-foreground") {
-                    if let Some(n) = nodes.first() {
-                        if let Ok(t) = n.text() { manga.title = t; }
-                    }
-                }
+                if let Ok(nodes) = html.select("h1.text-foreground")
+                    && let Some(n) = nodes.first()
+                        && let Ok(t) = n.text() { manga.title = t; }
                 
-                if let Ok(nodes) = html.select("div.rounded.overflow-hidden img") {
-                    if let Some(n) = nodes.first() {
-                        if let Ok(Some(src)) = n.attr("src") {
+                if let Ok(nodes) = html.select("div.rounded.overflow-hidden img")
+                    && let Some(n) = nodes.first()
+                        && let Ok(Some(src)) = n.attr("src") {
                             let abs_src = if src.starts_with("http") { src } else { format!("{}{}", BASE_URL, src) };
                             manga.cover = Some(Self::get_clean_cover_url(abs_src));
                         }
-                    }
-                }
                 
-                if let Ok(nodes) = html.select("meta[name='description']") {
-                    if let Some(n) = nodes.first() {
-                        if let Ok(Some(content)) = n.attr("content") {
+                if let Ok(nodes) = html.select("meta[name='description']")
+                    && let Some(n) = nodes.first()
+                        && let Ok(Some(content)) = n.attr("content") {
                             manga.description = Some(content);
                         }
-                    }
-                }
                 
-                if let Ok(nodes) = html.select("span.uppercase") {
-                    if let Some(n) = nodes.first() {
-                        if let Ok(s) = n.text() {
+                if let Ok(nodes) = html.select("span.uppercase")
+                    && let Some(n) = nodes.first()
+                        && let Ok(s) = n.text() {
                             manga.status = match s.to_lowercase().as_str() {
                                 "ongoing" => Status::Ongoing,
                                 "completed" => Status::Completed,
@@ -242,42 +236,31 @@ impl MangaProvider for LuaComic {
                                 _ => Status::Unknown,
                             };
                         }
-                    }
-                }
                 manga.viewer = Viewer::Webtoon;
 
-                if let Ok(nodes) = html.select("div.space-y-2.rounded.p-5") {
-                    if let Some(details_box) = nodes.first() {
-                        if let Ok(divs) = details_box.select("div.flex.justify-between") {
+                if let Ok(nodes) = html.select("div.space-y-2.rounded.p-5")
+                    && let Some(details_box) = nodes.first()
+                        && let Ok(divs) = details_box.select("div.flex.justify-between") {
                             for div in divs {
-                                if let Ok(spans) = div.select("span.text-muted-foreground:first-child") {
-                                    if let Some(label_span) = spans.first() {
-                                        if let Ok(label) = label_span.text() {
-                                            if label.contains("Author") {
-                                                if let Ok(last_spans) = div.select("span:last-child") {
-                                                    if let Some(last_span) = last_spans.first() {
-                                                        if let Ok(auth) = last_span.text() {
+                                if let Ok(spans) = div.select("span.text-muted-foreground:first-child")
+                                    && let Some(label_span) = spans.first()
+                                        && let Ok(label) = label_span.text()
+                                            && label.contains("Author")
+                                                && let Ok(last_spans) = div.select("span:last-child")
+                                                    && let Some(last_span) = last_spans.first()
+                                                        && let Ok(auth) = last_span.text() {
                                                             manga.authors = Some(vec![auth]);
                                                         }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
                             }
                         }
-                    }
-                }
             }
-        }
 
         if needs_chapters {
             let slug = manga.key.replace("/series/", "");
             let api_url = format!("{}/chapter/all/{}", API_URL, slug);
             
-            if let Ok(res) = Request::get(&api_url).send() {
-                if let Ok(response) = serde_json::from_slice::<Vec<ApiChapter>>(&res.body) {
+            if let Ok(res) = Request::get(&api_url).send()
+                && let Ok(response) = serde_json::from_slice::<Vec<ApiChapter>>(&res.body) {
                     let mut chapters = Vec::new();
                     for ch in response {
                         let key = format!("{}/{}", manga.key, ch.chapter_slug);
@@ -315,7 +298,6 @@ impl MangaProvider for LuaComic {
                     
                     manga.chapters = Some(chapters);
                 }
-            }
         }
 
         Ok(manga)
@@ -443,9 +425,9 @@ impl MangaProvider for LuaComic {
             let html = Node::new(&res.body);
 
             // 1. Featured
-            if let Ok(nodes) = html.select("div[role='region'][aria-roledescription='carousel']") {
-                if let Some(featured_carousel) = nodes.first() {
-                    if let Ok(links) = featured_carousel.select("a[href^='/series/']") {
+            if let Ok(nodes) = html.select("div[role='region'][aria-roledescription='carousel']")
+                && let Some(featured_carousel) = nodes.first()
+                    && let Ok(links) = featured_carousel.select("a[href^='/series/']") {
                         for el in links {
                             let url = el.attr("href").unwrap_or_default().unwrap_or_default();
                             let abs_url = if url.starts_with("http") { url.clone() } else { format!("{}{}", BASE_URL, url) };
@@ -478,16 +460,14 @@ impl MangaProvider for LuaComic {
                             });
                         }
                     }
-                }
-            }
 
             // 2. Recommended
-            if let Ok(nodes) = html.select("div.embla") {
-                if let Some(recommended_section) = nodes.first() {
-                    if let Ok(slides) = recommended_section.select("div.embla__slide") {
+            if let Ok(nodes) = html.select("div.embla")
+                && let Some(recommended_section) = nodes.first()
+                    && let Ok(slides) = recommended_section.select("div.embla__slide") {
                         for el in slides {
-                            if let Ok(links) = el.select("a") {
-                                if let Some(link) = links.first() {
+                            if let Ok(links) = el.select("a")
+                                && let Some(link) = links.first() {
                                     let url = link.attr("href").unwrap_or_default().unwrap_or_default();
                                     let abs_url = if url.starts_with("http") { url.clone() } else { format!("{}{}", BASE_URL, url) };
                                     
@@ -518,11 +498,8 @@ impl MangaProvider for LuaComic {
                                         chapters: None,
                                     });
                                 }
-                            }
                         }
                     }
-                }
-            }
 
             // 3. Editor's Choice
             if let Ok(sections) = html.select("div.container") {
@@ -535,8 +512,8 @@ impl MangaProvider for LuaComic {
                         let mut entries = Vec::new();
                         if let Ok(grid_items) = section.select("div.grid > div") {
                             for el in grid_items {
-                                if let Ok(links) = el.select("a") {
-                                    if let Some(link) = links.first() {
+                                if let Ok(links) = el.select("a")
+                                    && let Some(link) = links.first() {
                                         let url = link.attr("href").unwrap_or_default().unwrap_or_default();
                                         let abs_url = if url.starts_with("http") { url.clone() } else { format!("{}{}", BASE_URL, url) };
                                         
@@ -567,7 +544,6 @@ impl MangaProvider for LuaComic {
                                             chapters: None,
                                         });
                                     }
-                                }
                             }
                         }
                         if !entries.is_empty() {
@@ -614,8 +590,8 @@ impl MangaProvider for LuaComic {
         // Fetch Trending Daily
         if let Ok(res) = Request::get(format!("{}/trending?type=daily", API_URL))
             .header("Referer", "https://luacomic.org/")
-            .send() {
-            if let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
+            .send()
+            && let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
                 let entries: Vec<Manga> = series_list.into_iter().map(LuaComic::api_series_to_manga).collect();
                 if !entries.is_empty() {
                     components.push(HomeComponent {
@@ -625,13 +601,12 @@ impl MangaProvider for LuaComic {
                     });
                 }
             }
-        }
 
         // Fetch Trending Weekly
         if let Ok(res) = Request::get(format!("{}/trending?type=weekly", API_URL))
             .header("Referer", "https://luacomic.org/")
-            .send() {
-            if let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
+            .send()
+            && let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
                 let entries: Vec<Manga> = series_list.into_iter().map(LuaComic::api_series_to_manga).collect();
                 if !entries.is_empty() {
                     components.push(HomeComponent {
@@ -641,13 +616,12 @@ impl MangaProvider for LuaComic {
                     });
                 }
             }
-        }
 
         // Fetch Trending All Time
         if let Ok(res) = Request::get(format!("{}/trending?type=all", API_URL))
             .header("Referer", "https://luacomic.org/")
-            .send() {
-            if let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
+            .send()
+            && let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
                 let entries: Vec<Manga> = series_list.into_iter().map(LuaComic::api_series_to_manga).collect();
                 if !entries.is_empty() {
                     components.push(HomeComponent {
@@ -657,13 +631,12 @@ impl MangaProvider for LuaComic {
                     });
                 }
             }
-        }
 
         // Fetch Latest Updates
         if let Ok(res) = Request::get(format!("{}/query?page=1&perPage=20&series_type=Comic&orderBy=latest&adult=true&status=All&tags_ids=[]", API_URL))
             .header("Referer", "https://luacomic.org/")
-            .send() {
-            if let Ok(json) = serde_json::from_slice::<SeriesResponse>(&res.body) {
+            .send()
+            && let Ok(json) = serde_json::from_slice::<SeriesResponse>(&res.body) {
                 let entries: Vec<Manga> = json.data.into_iter().map(LuaComic::api_series_to_manga).collect();
                 if !entries.is_empty() {
                     components.push(HomeComponent {
@@ -676,13 +649,12 @@ impl MangaProvider for LuaComic {
                     });
                 }
             }
-        }
 
         Ok(HomeLayout { components })
     }
 
-    fn handle_url(url: String) -> Result<LinkValue> {
-        let key = url.strip_prefix(BASE_URL).unwrap_or(&url);
+    fn handle_url(url: &str) -> Result<LinkValue> {
+        let key = url.strip_prefix(BASE_URL).unwrap_or(url);
         
         if key.contains("/chapter-") || key.split('/').count() > 3 {
             let parts: Vec<&str> = key.split('/').collect();
@@ -697,7 +669,7 @@ impl MangaProvider for LuaComic {
                     description: None,
                     tags: None,
                     cover: None,
-                    url: Some(url),
+                    url: Some(url.to_string()),
                     status: Status::Unknown,
                     content_rating: ContentRating::Safe,
                     nsfw: 0,
@@ -714,7 +686,7 @@ impl MangaProvider for LuaComic {
                 description: None,
                 tags: None,
                 cover: None,
-                url: Some(url),
+                url: Some(url.to_string()),
                 status: Status::Unknown,
                 content_rating: ContentRating::Safe,
                 nsfw: 0,

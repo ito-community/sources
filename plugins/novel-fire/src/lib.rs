@@ -110,11 +110,10 @@ impl NovelProvider for NovelFire {
                     if !txt.is_empty() {
                         title = txt;
                     }
-                    if title.is_empty() {
-                        if let Some(t) = a_node.attr("title")? {
+                    if title.is_empty()
+                        && let Some(t) = a_node.attr("title")? {
                             title = t;
                         }
-                    }
                     if !title.is_empty() {
                         break;
                     }
@@ -143,7 +142,7 @@ impl NovelProvider for NovelFire {
         })
     }
 
-    fn get_search_novel_list(query: String, page: i32, _filters: Vec<FilterItem>) -> Result<PageResult> {
+    fn get_search_novel_list(query: &str, page: i32, _filters: Vec<FilterItem>) -> Result<PageResult> {
         let url = format!(
             "{}/search?keyword={}&page={}",
             BASE_URL,
@@ -204,11 +203,10 @@ impl NovelProvider for NovelFire {
             let html = Node::new(&res.body);
 
             let cover_node = html.select(".cover img")?.into_iter().next();
-            if let Some(n) = cover_node {
-                if let Some(src) = n.attr("src")? {
+            if let Some(n) = cover_node
+                && let Some(src) = n.attr("src")? {
                     updated_novel.cover = Some(src);
                 }
-            }
 
             let title_node = html.select(".main-head .novel-title")?.into_iter().next();
             if let Some(n) = title_node {
@@ -216,11 +214,10 @@ impl NovelProvider for NovelFire {
             }
 
             let author_node = html.select(".author a")?.into_iter().next();
-            if let Some(n) = author_node {
-                if let Some(title) = n.attr("title")? {
+            if let Some(n) = author_node
+                && let Some(title) = n.attr("title")? {
                     updated_novel.authors = Some(vec![title]);
                 }
-            }
 
             let desc_nodes = html.select("#info .content p")?;
             let mut desc_parts = Vec::new();
@@ -263,7 +260,7 @@ impl NovelProvider for NovelFire {
                     let a_node = node.select("a")?.into_iter().next();
                     if let Some(a) = a_node {
                         let title = a.attr("title")?.unwrap_or_default();
-                        let key = a.attr("href")?.map(|h| h.split('/').last().unwrap_or_default().to_string()).unwrap_or_default();
+                        let key = a.attr("href")?.map(|h| h.split('/').next_back().unwrap_or_default().to_string()).unwrap_or_default();
                         
                         let chap_no_node = node.select(".chapter-no")?.into_iter().next();
                         let chapter_number = match chap_no_node {

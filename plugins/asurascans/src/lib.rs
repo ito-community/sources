@@ -26,8 +26,8 @@ impl MangaProvider for AsuraScans {
         })
     }
 
-    fn handle_url(url: String) -> Result<LinkValue> {
-        if let Some(key) = get_manga_key(&url) {
+    fn handle_url(url: &str) -> Result<LinkValue> {
+        if let Some(key) = get_manga_key(url) {
             // If it's a chapter link, we still return the Manga for now as per Aidoku logic
             // or we could return something else if supported.
             // But usually handle_url returns the model to open.
@@ -39,7 +39,7 @@ impl MangaProvider for AsuraScans {
                 description: None,
                 tags: None,
                 cover: None,
-                url: Some(url),
+                url: Some(url.to_string()),
                 status: Status::Unknown,
                 content_rating: ContentRating::Safe,
                 nsfw: 0,
@@ -58,8 +58,8 @@ impl MangaProvider for AsuraScans {
         let mut components = Vec::new();
 
         // Trending
-        if let Ok(nodes) = html.select("astro-island[opts*=TrendingSection] > section") {
-            if let Some(trending_today) = nodes.first() {
+        if let Ok(nodes) = html.select("astro-island[opts*=TrendingSection] > section")
+            && let Some(trending_today) = nodes.first() {
                 let title = trending_today
                     .select("h2")?
                     .first()
@@ -69,9 +69,9 @@ impl MangaProvider for AsuraScans {
                 let mut entries = Vec::new();
                 if let Ok(nodes) = trending_today.select("div.embla-trending > div > div > a") {
                     for el in nodes {
-                        if let Some(href) = el.attr("href")? {
-                            if let Some(key) = get_manga_key(&href) {
-                                if let Some(title_node) = el.select("span.block")?.first() {
+                        if let Some(href) = el.attr("href")?
+                            && let Some(key) = get_manga_key(&href)
+                                && let Some(title_node) = el.select("span.block")?.first() {
                                     entries.push(Manga {
                                         key,
                                         title: title_node.text()?,
@@ -88,8 +88,6 @@ impl MangaProvider for AsuraScans {
                                         chapters: None,
                                     });
                                 }
-                            }
-                        }
                     }
                 }
                 
@@ -101,11 +99,10 @@ impl MangaProvider for AsuraScans {
                     });
                 }
             }
-        }
 
         // Latest Updates
-        if let Ok(nodes) = html.select("astro-island[opts*=LatestUpdates] > section") {
-            if let Some(latest_updates) = nodes.first() {
+        if let Ok(nodes) = html.select("astro-island[opts*=LatestUpdates] > section")
+            && let Some(latest_updates) = nodes.first() {
                 let title = latest_updates
                     .select("h2")?
                     .first()
@@ -118,9 +115,9 @@ impl MangaProvider for AsuraScans {
                         let link = el.select("a.font-bold")?.into_iter().next();
                         let chapter_link = el.select("div.col-span-8 > div.flex > a")?.into_iter().next();
                         
-                        if let (Some(link), Some(chapter_link)) = (link, chapter_link) {
-                            if let (Some(manga_href), Some(chapter_href)) = (link.attr("href")?, chapter_link.attr("href")?) {
-                                if let (Some(manga_key), Some(chapter_key)) = (get_manga_key(&manga_href), get_chapter_key(&chapter_href)) {
+                        if let (Some(link), Some(chapter_link)) = (link, chapter_link)
+                            && let (Some(manga_href), Some(chapter_href)) = (link.attr("href")?, chapter_link.attr("href")?)
+                                && let (Some(manga_key), Some(chapter_key)) = (get_manga_key(&manga_href), get_chapter_key(&chapter_href)) {
                                     let chapter_number = chapter_link.select("span.font-medium")?
                                         .first()
                                         .and_then(|s| s.text().ok())
@@ -156,8 +153,6 @@ impl MangaProvider for AsuraScans {
                                         },
                                     });
                                 }
-                            }
-                        }
                     }
                 }
 
@@ -169,16 +164,15 @@ impl MangaProvider for AsuraScans {
                     });
                 }
             }
-        }
 
         Ok(HomeLayout { components })
     }
 
     fn get_manga_list(_listing: Listing, page: i32) -> Result<PageResult> {
-        Self::get_search_manga_list(String::new(), page, Vec::new())
+        Self::get_search_manga_list("", page, Vec::new())
     }
 
-    fn get_search_manga_list(query: String, page: i32, _filters: Vec<FilterItem>) -> Result<PageResult> {
+    fn get_search_manga_list(query: &str, page: i32, _filters: Vec<FilterItem>) -> Result<PageResult> {
         let mut url = format!("{}/browse?page={}", BASE_URL, page);
         if !query.is_empty() {
             url.push_str(&format!("&q={}", query));
@@ -190,10 +184,10 @@ impl MangaProvider for AsuraScans {
         let mut entries = Vec::new();
         if let Ok(nodes) = html.select("#series-grid > .series-card") {
             for el in nodes {
-                if let Some(link) = el.select("a")?.first() {
-                    if let Some(href) = link.attr("href")? {
-                        if let Some(key) = get_manga_key(&href) {
-                            if let Some(title_node) = el.select("h3")?.first() {
+                if let Some(link) = el.select("a")?.first()
+                    && let Some(href) = link.attr("href")?
+                        && let Some(key) = get_manga_key(&href)
+                            && let Some(title_node) = el.select("h3")?.first() {
                                 entries.push(Manga {
                                     key: key.clone(),
                                     title: title_node.text()?,
@@ -210,16 +204,11 @@ impl MangaProvider for AsuraScans {
                                     chapters: None,
                                 });
                             }
-                        }
-                    }
-                }
             }
         }
 
-        let has_next_page = html
-            .select("a:contains(Next page), div.flex > a.flex.bg-themecolor:contains(Next)")?
-            .first()
-            .is_some();
+        let has_next_page = !html
+            .select("a:contains(Next page), div.flex > a.flex.bg-themecolor:contains(Next)")?.is_empty();
 
         Ok(PageResult { entries, has_next_page })
     }
@@ -238,9 +227,8 @@ impl MangaProvider for AsuraScans {
             let mut authors = Vec::new();
             if let Ok(nodes) = html.select("a[href^=/browse?artist]") {
                 for el in nodes {
-                    if let Ok(text) = el.text() {
-                        if text != "_" { authors.push(text); }
-                    }
+                    if let Ok(text) = el.text()
+                        && text != "_" { authors.push(text); }
                 }
             }
             if !authors.is_empty() {
@@ -288,9 +276,9 @@ impl MangaProvider for AsuraScans {
             }
         }
 
-        if needs_chapters {
-            if let Some(island) = html.select("astro-island[component-url*=ChapterListReact], astro-island[opts*=ChapterListReact]")?.first() {
-                if let Some(props) = island.attr("props")? {
+        if needs_chapters
+            && let Some(island) = html.select("astro-island[component-url*=ChapterListReact], astro-island[opts*=ChapterListReact]")?.first()
+                && let Some(props) = island.attr("props")? {
                     let json: serde_json::Value = serde_json::from_str(&props).map_err(|_| ito_rs::Error::Host("JSON parse error".to_string()))?;
                     
                     if let Some(chapters_arr) = json["chapters"][1].as_array() {
@@ -323,8 +311,6 @@ impl MangaProvider for AsuraScans {
                         manga.chapters = Some(chapters);
                     }
                 }
-            }
-        }
 
         Ok(manga)
     }
@@ -334,8 +320,8 @@ impl MangaProvider for AsuraScans {
         let res = Request::get(url).send()?;
         let html = Node::new(&res.body);
 
-        if let Some(island) = html.select("astro-island[component-url*=ChapterReader], astro-island[opts*=ChapterReader]")?.first() {
-            if let Some(props) = island.attr("props")? {
+        if let Some(island) = html.select("astro-island[component-url*=ChapterReader], astro-island[opts*=ChapterReader]")?.first()
+            && let Some(props) = island.attr("props")? {
                 let json: serde_json::Value = serde_json::from_str(&props).map_err(|_| ito_rs::Error::Host("JSON parse error".to_string()))?;
                 if let Some(page_arr) = json["pages"][1].as_array() {
                     let mut pages = Vec::new();
@@ -353,7 +339,6 @@ impl MangaProvider for AsuraScans {
                     return Ok(pages);
                 }
             }
-        }
 
         Ok(vec![])
     }

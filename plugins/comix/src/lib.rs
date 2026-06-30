@@ -138,22 +138,21 @@ impl MangaProvider for Comix {
             _ => return Ok(MangaPageResult { entries: vec![], has_next_page: false }),
         };
 
-        if !url.is_empty() {
-            if let Ok(json) = web::ComixWebView::fetch_json::<SearchResponse>(&url) {
+        if !url.is_empty()
+            && let Ok(json) = web::ComixWebView::fetch_json::<SearchResponse>(&url) {
                 return Ok(json.result.into_filtered(&hidden_types, &hidden_terms));
             }
-        }
         Ok(MangaPageResult { entries: vec![], has_next_page: false })
     }
 
     fn get_search_manga_list(
-        query: String,
+        query: &str,
         page: i32,
         _filters: Vec<FilterItem>,
     ) -> Result<MangaPageResult> {
         let mut url = format!("{}/manga?page={}", API_URL, page);
         if !query.is_empty() {
-            url.push_str(&format!("&keyword={}", helpers::urlencode(&query)));
+            url.push_str(&format!("&keyword={}", helpers::urlencode(query)));
         }
 
         url.push_str("&order[relevance]=desc");
@@ -270,8 +269,8 @@ impl MangaProvider for Comix {
 
     fn get_page_list(_manga: Manga, chapter: Chapter) -> Result<Vec<Page>> {
         let url = format!("{}/chapters/{}", API_URL, chapter.key);
-        if let Ok(json) = web::ComixWebView::fetch_json::<ChapterResponse>(&url) {
-            if let Some(result) = json.result {
+        if let Ok(json) = web::ComixWebView::fetch_json::<ChapterResponse>(&url)
+            && let Some(result) = json.result {
                 return Ok(result.get_images().into_iter().enumerate().map(|(i, img)| {
                     let is_scrambled = img.s == Some(1);
                     let img_w = img.width;
@@ -287,15 +286,14 @@ impl MangaProvider for Comix {
                     page
                 }).collect());
             }
-        }
         Ok(vec![])
     }
 
-    fn handle_url(_url: String) -> Result<ito_rs::models::LinkValue> {
+    fn handle_url(_url: &str) -> Result<ito_rs::models::LinkValue> {
         Err(ito_rs::Error::Unsupported)
     }
 
-    fn handle_image(url: String) -> Result<Vec<u8>> {
+    fn handle_image(url: &str) -> Result<Vec<u8>> {
         let mut actual_url = url.replace("ito://com.kunihir0.comix/", "");
         let is_scrambled = actual_url.contains("ito_scrambled=1");
         
@@ -317,30 +315,25 @@ impl MangaProvider for Comix {
             actual_url = actual_url.trim_end_matches('?').trim_end_matches('&').to_string();
 
             // Execute descrambler directly
-            if let Ok(data_uri) = web::ComixWebView::descramble_image(width, height, &actual_url) {
-                if let Some((_, base64_data)) = data_uri.split_once(',') {
-                    if let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(base64_data) {
+            if let Ok(data_uri) = web::ComixWebView::descramble_image(width, height, &actual_url)
+                && let Some((_, base64_data)) = data_uri.split_once(',')
+                    && let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(base64_data) {
                         return Ok(bytes);
                     }
-                }
-            }
             return Err(ito_rs::Error::Unsupported);
         }
 
         let res = Request::get(&actual_url).send()?;
         let headers = res.headers;
-        if let Some(x_enc) = headers.get("x-enc") {
-            if x_enc == "1" {
+        if let Some(x_enc) = headers.get("x-enc")
+            && x_enc == "1" {
                 // Execute descrambler
-                if let Ok(data_uri) = web::ComixWebView::descramble_image(width, height, &actual_url) {
-                    if let Some((_, base64_data)) = data_uri.split_once(',') {
-                        if let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(base64_data) {
+                if let Ok(data_uri) = web::ComixWebView::descramble_image(width, height, &actual_url)
+                    && let Some((_, base64_data)) = data_uri.split_once(',')
+                        && let Ok(bytes) = base64::prelude::BASE64_STANDARD.decode(base64_data) {
                             return Ok(bytes);
                         }
-                    }
-                }
             }
-        }
         Ok(res.body)
     }
 }

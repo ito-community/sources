@@ -4,32 +4,15 @@ use ito_rs::webview::Webview;
 use ito_rs::{Error, Result};
 use regex::Regex;
 use serde::Deserialize;
-use serde_json::Value;
-use std::collections::BTreeMap;
+
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static IS_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-#[derive(Deserialize)]
-struct AxiosRequest {
-	pub url: String,
-	pub params: Option<BTreeMap<String, Value>>,
-	pub headers: Option<BTreeMap<String, String>>,
-}
 
-const GET_VMOBJ_JS: &str = "\
-const vmKey = Object.keys(window).find(key => key.startsWith('vm'));\
-const vmObj = window[vmKey];\
-if (!vmObj || typeof vmObj !== 'object' || vmObj === window) {\
-	return '';\
-}";
-
-const CANVAS_TO_DATA_URL_TOKEN: &str = "__AIDOKU_CANVAS_TO_DATA_URL_TOKEN__";
 
 const INSTALLER_REQUEST_TOKEN: &str = "__AIDOKU_INSTALLER_REQUEST_TOKEN__";
 const INSTALLER_RESPONSE_TOKEN: &str = "__AIDOKU_INSTALLER_RESPONSE_TOKEN__";
-const SIGNER_TOKEN: &str = "__AIDOKU_SIGNER_TOKEN__";
-
 const DESCRAMBLER_BLOB_TOKEN: &str = "__AIDOKU_DESCRAMBLER_BLOB_TOKEN__";
 const DESCRAMBLER_CANVAS_TOKEN: &str = "__AIDOKU_DESCRAMBLER_CANVAS_TOKEN__";
 
@@ -39,7 +22,6 @@ const EMPTY_DESCRAMBLER_RESPONSE_OBJECT: &str =
 const FETCH_TIMEOUT_RESPONSE: &str =
 	"Fetch timeout after 30s. If problem persist, please restart the application.";
 
-const CF_CHALLENGE_ERROR_MESSAGE: &str = "Response returned CF challenge page instead of JSON data. If problem persist, please clear the source cache and restart the application to resolve this issue.";
 
 #[derive(Deserialize)]
 struct DescrambleResponseObject {
@@ -112,7 +94,7 @@ impl ComixWebView {
 		let html = String::from_utf8_lossy(&response.body).into_owned();
 
 		ito_rs::host::print("find_secure_module_src: matching regex");
-		let main_regex = Regex::new(r#"<script[^>]*src="([^"]*main[^"]*\.js)"[^>]*>"#).unwrap();
+		let main_regex = Regex::new(r#"<script[^>]*src="([^"]*main[^"]*\.js)"[^>]*>"#).map_err(|e| ito_rs::Error::Host(e.to_string()))?;
 		if let Some(captures) = main_regex.captures(&html) {
 			if let Some(main_module_src) = captures.get(1) {
 				let src = main_module_src.as_str();
@@ -128,9 +110,9 @@ impl ComixWebView {
 				let res = req.send()?;
 				let js = String::from_utf8_lossy(&res.body).into_owned();
 
-				let secure_script_regex = Regex::new(r#""(secure-[^"]+\.js)""#).unwrap();
+				let secure_script_regex = Regex::new(r#""(secure-[^"]+\.js)""#).map_err(|e| ito_rs::Error::Host(e.to_string()))?;
 				if let Some(caps) = secure_script_regex.captures(&js) {
-					let secure_script_path = caps.get(1).unwrap().as_str();
+					let secure_script_path = caps.get(1).ok_or_else(|| ito_rs::Error::Host("Regex capture missing".into()))?.as_str();
 					ito_rs::host::print(&format!("find_secure_module_src: found secure_script_path: {}", secure_script_path));
 					
                     let js_asset_path = if let Some(idx) = src.rfind('/') {
@@ -870,7 +852,7 @@ impl ComixWebView {
         };
 
 		let json = serde_json::from_str::<DescrambleResponseObject>(&unquoted)
-			.unwrap_or_else(|_| DescrambleResponseObject { data: None, error: None });
+			.unwrap_or(DescrambleResponseObject { data: None, error: None });
 
 		if let Some(error) = json.error {
 			ito_rs::host::print(&format!("JS descrambler error: {}", error));
