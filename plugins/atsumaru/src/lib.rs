@@ -85,38 +85,28 @@ impl Atsumaru {
 
         let res = Request::get(&url).send()?;
 
-        let json_result: std::result::Result<SearchResponse, _> = serde_json::from_slice(&res.body);
-        match json_result {
-            Ok(json) => {
-                let entries: Vec<Manga> = json.hits.into_iter().map(|hit| build_manga_from_doc(&hit.document)).collect();
-                let has_next_page = json.found > (json.page * per_page);
+        let json = serde_json::from_slice::<SearchResponse>(&res.body)
+            .map_err(|e| ito_rs::Error::Host(format!("JSON error: {}", e)))?;
 
-                Ok(MangaPageResult {
-                    entries,
-                    has_next_page,
-                })
-            },
-            Err(_) => {
-                Ok(MangaPageResult { entries: vec![], has_next_page: false })
-            }
-        }
+        let entries: Vec<Manga> = json.hits.into_iter().map(|hit| build_manga_from_doc(&hit.document)).collect();
+        let has_next_page = json.found > (json.page * per_page);
+
+        Ok(MangaPageResult {
+            entries,
+            has_next_page,
+        })
     }
 
     fn fetch_infinite(url: &str) -> Result<MangaPageResult> {
         let res = Request::get(url).send()?;
-        let json_result: std::result::Result<InfiniteResponse, _> = serde_json::from_slice(&res.body);
-        match json_result {
-            Ok(json) => {
-                let entries: Vec<Manga> = json.items.into_iter().map(|item| build_manga_from_infinite(&item)).collect();
-                Ok(MangaPageResult {
-                    has_next_page: !entries.is_empty(), // infinite scrolling usually has next page if not empty
-                    entries,
-                })
-            },
-            Err(_) => {
-                Ok(MangaPageResult { entries: vec![], has_next_page: false })
-            }
-        }
+        let json = serde_json::from_slice::<InfiniteResponse>(&res.body)
+            .map_err(|e| ito_rs::Error::Host(format!("JSON error: {}", e)))?;
+        
+        let entries: Vec<Manga> = json.items.into_iter().map(|item| build_manga_from_infinite(&item)).collect();
+        Ok(MangaPageResult {
+            has_next_page: !entries.is_empty(), // infinite scrolling usually has next page if not empty
+            entries,
+        })
     }
 }
 

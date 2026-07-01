@@ -10,6 +10,9 @@ interface Package {
   icon_url: string | null
   sha256: string
   type: string
+  archived?: boolean
+  archived_reason?: string
+  archived_date?: string
 }
 
 interface RepoIndex {
@@ -107,17 +110,25 @@ onMounted(async () => {
                   ICON
                 </div>
               </div>
-              <!-- Badge -->
-              <span class="text-xs font-semibold uppercase tracking-wider bg-gray-200/50 text-gray-700 px-3 py-1 rounded-full">
-                {{ pkg.type }}
-              </span>
+              <!-- Badges -->
+              <div class="flex items-center gap-2">
+                <span v-if="pkg.archived" class="text-xs font-semibold uppercase tracking-wider bg-orange-100/80 text-orange-700 border border-orange-200 px-3 py-1 rounded-full">
+                  Archived
+                </span>
+                <span class="text-xs font-semibold uppercase tracking-wider bg-gray-200/50 text-gray-700 px-3 py-1 rounded-full">
+                  {{ pkg.type }}
+                </span>
+              </div>
             </div>
             
             <h3 class="text-xl font-bold tracking-tight text-black mb-1">
               {{ normalizeName(pkg.name) }}
             </h3>
-            <p class="text-sm font-medium text-gray-500 mb-6">
+            <p class="text-sm font-medium text-gray-500" :class="{ 'mb-2': pkg.archived, 'mb-6': !pkg.archived }">
               Version {{ pkg.version }}
+            </p>
+            <p v-if="pkg.archived" class="text-xs font-medium text-orange-600/90 leading-snug mb-4">
+              {{ pkg.archived_reason ? 'No longer maintained: ' + pkg.archived_reason : 'This plugin is no longer maintained.' }}
             </p>
           </div>
 
