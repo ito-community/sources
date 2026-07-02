@@ -1,0 +1,19 @@
+{
+    "id": "com.kunihir0.anikoto",
+    "name": "ANIKOTO",
+    "version": "1.3.2",
+    "min_app_version": "1.0.0",
+    "url": "https://anikototv.to/",
+    "sourceUrl": "https://github.com/ito-community/sources/plugins/anikoto",
+    "contentRating": 0,
+    "nsfw": 0,
+    "language": "en",
+    "languages": [
+        "en"
+    ],
+    "type": "anime",
+    "author": "kunihir0",
+    "description": "An anime plugin to watch anime for free",
+    "archived": false,
+    "archived_reason": ""
+}
