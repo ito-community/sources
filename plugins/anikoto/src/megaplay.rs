@@ -40,7 +40,15 @@ pub fn extract(embed_url: &str, referer: &str) -> Option<Vec<Video>> {
 
     // 3. Fetch sources JSON
     let base_url = embed_url.split("/stream/").next().unwrap_or("https://megaplay.buzz");
-    let api_url = format!("{}/stream/getSources?id={}", base_url, player_id);
+    
+    let url_no_query = embed_url.split('?').next().unwrap_or(embed_url);
+    let type_suffix = url_no_query.split('/').last().unwrap_or("");
+    
+    let mut api_url = format!("{}/stream/getSources?id={}", base_url, player_id);
+    if type_suffix == "sub" || type_suffix == "hsub" || type_suffix == "dub" {
+        api_url.push_str(&format!("&type={}", type_suffix));
+    }
+
     let api_res = Request::get(&api_url)
         .header("User-Agent", user_agent)
         .header("Referer", embed_url)
@@ -79,7 +87,8 @@ pub fn extract(embed_url: &str, referer: &str) -> Option<Vec<Video>> {
 
     // Extract subtitles
     let mut subtitles = Vec::new();
-    if let Some(tracks) = json.get("tracks").and_then(|t| t.as_array()) {
+    if type_suffix != "hsub" {
+        if let Some(tracks) = json.get("tracks").and_then(|t| t.as_array()) {
         let base_url = embed_url.split("/stream/").next().unwrap_or("https://megaplay.buzz");
         for track in tracks {
             if let Some(kind) = track.get("kind").and_then(|k| k.as_str()) {
@@ -112,7 +121,17 @@ pub fn extract(embed_url: &str, referer: &str) -> Option<Vec<Video>> {
                 }
             }
         }
+        }
     }
+
+    let empty_vtt = "WEBVTT\n\n";
+    let empty_b64 = base64::engine::general_purpose::STANDARD.encode(empty_vtt);
+    subtitles.push(Subtitle {
+        url: format!("data:text/vtt;charset=utf-8;base64,{}", empty_b64),
+        language: "Off".to_string(),
+        format: "vtt".to_string(),
+        is_hardsub: false,
+    });
 
     let mut headers = HashMap::new();
     let base_url = embed_url.split("/stream/").next().unwrap_or("https://megaplay.buzz");
