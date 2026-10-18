@@ -113,7 +113,7 @@ impl MangaProvider for AsuraScans {
                 if let Ok(nodes) = latest_updates.select("div.grid > div.grid") {
                     for el in nodes {
                         let link = el.select("a.font-bold")?.into_iter().next();
-                        let chapter_link = el.select("div.col-span-8 > div.flex > a")?.into_iter().next();
+                        let chapter_link = el.select("div.col-span-8 a[href*='/chapter/']")?.into_iter().next();
                         
                         if let (Some(link), Some(chapter_link)) = (link, chapter_link)
                             && let (Some(manga_href), Some(chapter_href)) = (link.attr("href")?, chapter_link.attr("href")?)
