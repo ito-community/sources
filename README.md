@@ -30,7 +30,7 @@ Requires Rust with the `wasm32-unknown-unknown` target and `ito-pkg`:
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo install --git https://github.com/kunihir0/ito-pkg
+cargo install --force --git https://github.com/AtiinLabs/ito-pkg
 cd plugins/<name>
 ito-pkg pack
 ```
