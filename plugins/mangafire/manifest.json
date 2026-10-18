@@ -1,7 +1,7 @@
 {
     "id": "com.kunihir0.mangafire",
     "name": "MangaFire",
-    "version": "1.0.3",
+    "version": "1.1.0",
     "min_app_version": "1.0.0",
     "url": "https://mangafire.to",
     "sourceUrl": "https://github.com/ito-community/sources",
