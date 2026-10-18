@@ -9,20 +9,23 @@ mod models;
 use models::*;
 
 const BASE_URL: &str = "https://atsu.moe";
+const CDN_URL: &str = "https://cdn.atsu.moe";
 const API_BASE: &str = "https://atsu.moe/api";
 const SEARCH_URL: &str = "https://atsu.moe/collections/manga/documents/search";
-
+const HOME_API: &str = "https://atsu.moe/api/home2";
+const HOME_PAGE_SIZE: i32 = 24;
+const COMIC_FILTER: &str = "medium:Comic";
 pub struct Atsumaru;
 
 fn resolve_image_url(path: String) -> String {
     if path.starts_with("http") {
         path
     } else if path.starts_with("/static/") || path.starts_with("static/") {
-        format!("{}/{}", BASE_URL, path.trim_start_matches('/'))
+        format!("{}/{}", CDN_URL, path.trim_start_matches('/'))
     } else if path.starts_with('/') {
-        format!("{}{}", BASE_URL, path)
+        format!("{}{}", CDN_URL, path)
     } else {
-        format!("{}/static/{}", BASE_URL, path)
+        format!("{}/static/{}", CDN_URL, path)
     }
 }
 
@@ -69,7 +72,13 @@ fn build_manga_from_infinite(item: &InfiniteItem) -> Manga {
 }
 
 impl Atsumaru {
-    fn fetch_search(q: &str, page: i32, per_page: i32, sort_by: &str) -> Result<MangaPageResult> {
+    fn fetch_search(
+        q: &str,
+        page: i32,
+        per_page: i32,
+        sort_by: &str,
+        filter_by: Option<&str>,
+    ) -> Result<MangaPageResult> {
         let q_escaped = q.replace(" ", "%20");
         let mut url = format!(
             "{}?q={}&page={}&per_page={}&query_by=title,englishTitle,otherNames,authors,tags&include_fields=id,title,englishTitle,poster,posterSmall,posterMedium,type,isAdult,status,year,synopsis,tags,authors",
@@ -82,8 +91,14 @@ impl Atsumaru {
         if !sort_by.is_empty() {
             url.push_str(&format!("&sort_by={}", sort_by));
         }
+        if let Some(filter) = filter_by {
+            url.push_str(&format!("&filter_by={}", filter));
+        }
 
         let res = Request::get(&url).send()?;
+        if res.status != 200 {
+            return Err(ito_rs::Error::Host(format!("Atsumaru search returned HTTP {}", res.status)));
+        }
 
         let json = serde_json::from_slice::<SearchResponse>(&res.body)
             .map_err(|e| ito_rs::Error::Host(format!("JSON error: {}", e)))?;
@@ -97,14 +112,26 @@ impl Atsumaru {
         })
     }
 
-    fn fetch_infinite(url: &str) -> Result<MangaPageResult> {
-        let res = Request::get(url).send()?;
+    fn fetch_home2(endpoint: &str, offset: i32, timeframe: Option<&str>) -> Result<MangaPageResult> {
+        let mut url = format!(
+            "{}/{}?offset={}&limit={}&mediums=Comic",
+            HOME_API, endpoint, offset, HOME_PAGE_SIZE
+        );
+        if let Some(t) = timeframe {
+            url.push_str(&format!("&timeframe={}", t));
+        }
+
+        let res = Request::get(&url).send()?;
+        if res.status != 200 {
+            return Err(ito_rs::Error::Host(format!("Atsumaru {} returned HTTP {}", endpoint, res.status)));
+        }
+
         let json = serde_json::from_slice::<InfiniteResponse>(&res.body)
             .map_err(|e| ito_rs::Error::Host(format!("JSON error: {}", e)))?;
-        
+
         let entries: Vec<Manga> = json.items.into_iter().map(|item| build_manga_from_infinite(&item)).collect();
         Ok(MangaPageResult {
-            has_next_page: !entries.is_empty(), // infinite scrolling usually has next page if not empty
+            has_next_page: entries.len() as i32 >= HOME_PAGE_SIZE,
             entries,
         })
     }
@@ -112,9 +139,9 @@ impl Atsumaru {
 
 impl MangaProvider for Atsumaru {
     fn get_home() -> Result<HomeLayout> {
-        let hot_updates = Self::fetch_infinite("https://atsu.moe/api/infinite/recentlyUpdated?page=0&types=Manga%2CManwha%2CManhua")?.entries;
-        let trending = Self::fetch_infinite("https://atsu.moe/api/infinite/trending?page=0&types=Manga%2CManwha%2CManhua")?.entries;
-        let most_bookmarked = Self::fetch_infinite("https://atsu.moe/api/infinite/mostBookmarked?page=0&timeframe=30")?.entries;
+        let hot_updates = Self::fetch_home2("recentlyUpdated", 0, None)?.entries;
+        let trending = Self::fetch_search("*", 1, HOME_PAGE_SIZE, "trending:desc", Some(COMIC_FILTER))?.entries;
+        let most_bookmarked = Self::fetch_home2("mostBookmarked", 0, Some("monthly"))?.entries;
 
         Ok(HomeLayout {
             components: vec![
@@ -154,17 +181,17 @@ impl MangaProvider for Atsumaru {
         _filters: Vec<FilterItem>,
     ) -> Result<MangaPageResult> {
         let q = if query.is_empty() { "*".to_string() } else { query.to_string() };
-        Self::fetch_search(&q, page, 24, "views:desc") // hardcode sort for demo
+        Self::fetch_search(&q, page, 24, "views:desc", None) // hardcode sort for demo
     }
 
     fn get_manga_list(listing: Listing, page: i32) -> Result<MangaPageResult> {
-        // the API takes 0-indexed pages
-        let api_page = page - 1;
+        // Ito pages are 1-indexed; home2 uses offset paging.
+        let offset = (page - 1).max(0) * HOME_PAGE_SIZE;
         match listing.id.as_str() {
-            "mostBookmarked" => Self::fetch_infinite(&format!("https://atsu.moe/api/infinite/mostBookmarked?page={}&timeframe=30", api_page)),
-            "trending" => Self::fetch_infinite(&format!("https://atsu.moe/api/infinite/trending?page={}&types=Manga%2CManwha%2CManhua", api_page)),
-            "recentlyUpdated" => Self::fetch_infinite(&format!("https://atsu.moe/api/infinite/recentlyUpdated?page={}&types=Manga%2CManwha%2CManhua", api_page)),
-            _ => Self::fetch_search("*", page, 24, "views:desc")
+            "mostBookmarked" => Self::fetch_home2("mostBookmarked", offset, Some("monthly")),
+            "trending" => Self::fetch_search("*", page, HOME_PAGE_SIZE, "trending:desc", Some(COMIC_FILTER)),
+            "recentlyUpdated" => Self::fetch_home2("recentlyUpdated", offset, None),
+            _ => Self::fetch_search("*", page, 24, "views:desc", None),
         }
     }
 
