@@ -3,7 +3,34 @@ use ito_rs::{
     models::anime::{Video, Subtitle},
 };
 use std::collections::HashMap;
+use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
 use base64::Engine;
+use base64::alphabet;
+use base64::engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig};
+
+// getSources returns the stream as `enc`: AES-256-CBC with PKCS#7 padding,
+// keyed by this 16-byte string zero-padded to 32 bytes, base64 (standard or
+// URL-safe alphabet, padding optional). The plaintext is JSON `{"file": ...}`.
+const SOURCE_KEY: &[u8; 16] = b"i?LMTAx0Q6,:}50U";
+const SOURCE_IV: &[u8; 16] = b"W0;27ToaUpl_P%'c";
+
+fn decrypt_source(enc: &str) -> Option<String> {
+    let b64 = enc.replace('-', "+").replace('_', "/");
+    let engine = GeneralPurpose::new(
+        &alphabet::STANDARD,
+        GeneralPurposeConfig::new().with_decode_padding_mode(DecodePaddingMode::Indifferent),
+    );
+    let mut data = engine.decode(b64).ok()?;
+
+    let mut key = [0u8; 32];
+    key[..16].copy_from_slice(SOURCE_KEY);
+    let plain = cbc::Decryptor::<aes::Aes256>::new(&key.into(), SOURCE_IV.into())
+        .decrypt_padded::<Pkcs7>(&mut data)
+        .ok()?;
+
+    let json: serde_json::Value = serde_json::from_slice(plain).ok()?;
+    json.get("file")?.as_str().map(str::to_string)
+}
 
 pub fn extract(embed_url: &str, referer: &str) -> Option<Vec<Video>> {
     let user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0";
@@ -64,21 +91,19 @@ pub fn extract(embed_url: &str, referer: &str) -> Option<Vec<Video>> {
 
     let mut videos = Vec::new();
     
-    // Extract file url
-    let file_url = if let Some(sources) = json.get("sources") {
-        if let Some(sources_array) = sources.as_array() {
-            sources_array.first().and_then(|s| s.get("file")).and_then(|f| f.as_str())
-        } else if let Some(sources_obj) = sources.as_object() {
-            sources_obj.get("file").and_then(|f| f.as_str())
-        } else {
-            None
+    // Extract file url: plain `sources` (older responses) or encrypted `enc`
+    let file_url = match json.get("sources") {
+        Some(serde_json::Value::Array(sources)) => {
+            sources.first().and_then(|s| s.get("file")).and_then(|f| f.as_str()).map(str::to_string)
         }
-    } else {
-        None
+        Some(serde_json::Value::Object(sources)) => {
+            sources.get("file").and_then(|f| f.as_str()).map(str::to_string)
+        }
+        _ => json.get("enc").and_then(|e| e.as_str()).and_then(decrypt_source),
     };
 
     let file_url = match file_url {
-        Some(u) => u.to_string(),
+        Some(u) => u,
         None => {
             ito_rs::host::print("MegaPlay: No file URL found in response.");
             return None;
