@@ -285,9 +285,12 @@ impl MangaProvider for AsuraScans {
                         let mut chapters = Vec::new();
                         let show_locked = defaults::get("show_locked")?.unwrap_or_else(|| "true".to_string()) == "true";
 
-                        for obj in chapters_arr {
-                            if let Some(obj) = obj[1].as_object() {
-                                let locked = obj["is_locked"][1].as_bool().unwrap_or_default();
+                        for entry in chapters_arr {
+                            // Astro props encode each value as [type, value]. Index through
+                            // `Value` (not `Map`) so a missing field yields Null instead of panicking.
+                            let obj = &entry[1];
+                            if obj.is_object() {
+                                let locked = obj["is_premium"][1].as_bool().unwrap_or_default();
                                 if !show_locked && locked {
                                     continue;
                                 }
@@ -297,7 +300,7 @@ impl MangaProvider for AsuraScans {
                                 
                                 chapters.push(Chapter {
                                     key: key.clone(),
-                                    title: None,
+                                    title: obj["title"][1].as_str().map(str::to_string),
                                     volume: None,
                                     chapter: chapter_number,
                                     date_updated: None, 
