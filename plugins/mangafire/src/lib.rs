@@ -1,6 +1,6 @@
 use ito_rs::export_manga_plugin;
 use ito_rs::provider::MangaProvider;
-use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, MangaWithChapter, Setting, SettingsSchema, LinkValue};
+use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, Setting, SettingsSchema, LinkValue};
 use ito_rs::models::manga::{Manga, Chapter, PageResult, Status, ContentRating, Viewer};
 use ito_rs::net::Request;
 use ito_rs::html::Node;
@@ -26,6 +26,23 @@ struct AjaxRead {
 #[derive(Deserialize)]
 struct AjaxPageList {
     images: Vec<Vec<serde_json::Value>>,
+}
+
+#[derive(Deserialize)]
+struct TopTitlesResponse {
+    items: Vec<TopTitle>,
+}
+
+#[derive(Deserialize)]
+struct TopTitle {
+    title: String,
+    url: String,
+    poster: Option<TopPoster>,
+}
+
+#[derive(Deserialize)]
+struct TopPoster {
+    medium: Option<String>,
 }
 
 struct MangaFire;
@@ -82,6 +99,36 @@ impl MangaFire {
             }).collect()
         }
     }
+
+    fn fetch_top_titles(days: i32) -> Result<Vec<Manga>> {
+        let url = format!("{}/api/top-titles?type=trending&days={}&limit=30", BASE_URL, days);
+        let res = Request::get(url).header("Accept", "application/json").send()?;
+        if res.status != 200 {
+            return Err(ito_rs::Error::Host(format!("MangaFire top-titles returned HTTP {}", res.status)));
+        }
+        let json = serde_json::from_slice::<TopTitlesResponse>(&res.body)
+            .map_err(|e| ito_rs::Error::Host(format!("JSON error: {}", e)))?;
+        Ok(json
+            .items
+            .into_iter()
+            .map(|item| Manga {
+                key: item.url.clone(),
+                title: item.title,
+                cover: item.poster.and_then(|p| p.medium),
+                authors: None,
+                artist: None,
+                description: None,
+                tags: None,
+                url: Some(format!("{}{}", BASE_URL, item.url)),
+                status: Status::Unknown,
+                content_rating: ContentRating::Safe,
+                nsfw: 0,
+                viewer: Viewer::Default,
+                chapters: None,
+            })
+            .collect())
+    }
+
 }
 
 impl MangaProvider for MangaFire {
@@ -131,142 +178,22 @@ impl MangaProvider for MangaFire {
     }
 
     fn get_home() -> Result<HomeLayout> {
-        let res = Request::get(format!("{}/home", BASE_URL)).send()?;
-        if res.status != 200 {
-            return Ok(HomeLayout { components: vec![] });
-        }
-        let html = Node::new(&res.body);
+        let sections = [
+            ("Trending Today", 1),
+            ("Trending This Week", 7),
+            ("Trending This Month", 30),
+        ];
         let mut components = Vec::new();
-        
-        // Big Scroller (Trending)
-        if let Ok(nodes) = html.select(".trending .swiper-wrapper .swiper-slide") {
-            let mut entries = Vec::new();
-            for el in nodes {
-                if let Some(link) = el.select(".info .above a")?.first()
-                    && let Some(href) = link.attr("href")? {
-                        let key = if let Some(stripped) = href.strip_prefix(BASE_URL) {
-                            stripped.to_string()
-                        } else {
-                            href
-                        };
-                        entries.push(Manga {
-                            key: key.clone(),
-                            title: link.text()?,
-                            cover: el.select("img")?.first().and_then(|img| img.attr("src").ok().flatten()),
-                            authors: None,
-                            artist: None,
-                            description: el.select(".info .below span")?.first().and_then(|e| e.text().ok()),
-                            tags: el.select(".info .below a")?.into_iter().filter_map(|e| e.text().ok()).collect::<Vec<_>>().into(),
-                            url: Some(format!("{}{}", BASE_URL, key)),
-                            status: Status::Unknown,
-                            content_rating: ContentRating::Safe,
-                            nsfw: 0,
-                            viewer: Viewer::Default,
-                            chapters: None,
-                        });
-                    }
-            }
+        for (title, days) in sections {
+            let entries = Self::fetch_top_titles(days)?;
             if !entries.is_empty() {
                 components.push(HomeComponent {
-                    title: None,
-                    subtitle: None,
-                    value: HomeComponentValue::BigScroller(entries, Some(10.0)),
-                });
-            }
-        }
-
-        // Most Viewed
-        if let Ok(nodes) = html.select("#most-viewed .swiper-wrapper .swiper-slide") {
-            let mut entries = Vec::new();
-            for el in nodes {
-                if let Some(link) = el.select("a")?.first()
-                    && let Some(href) = link.attr("href")? {
-                        let key = if let Some(stripped) = href.strip_prefix(BASE_URL) {
-                            stripped.to_string()
-                        } else {
-                            href
-                        };
-                        entries.push(Manga {
-                            key: key.clone(),
-                            title: link.select("span")?.first().and_then(|e| e.text().ok()).unwrap_or_default(),
-                            cover: el.select(".poster img")?.first().and_then(|img| img.attr("src").ok().flatten()),
-                            authors: None,
-                            artist: None,
-                            description: None,
-                            tags: None,
-                            url: Some(format!("{}{}", BASE_URL, key)),
-                            status: Status::Unknown,
-                            content_rating: ContentRating::Safe,
-                            nsfw: 0,
-                            viewer: Viewer::Default,
-                            chapters: None,
-                        });
-                    }
-            }
-            if !entries.is_empty() {
-                components.push(HomeComponent {
-                    title: Some("Most Viewed".to_string()),
+                    title: Some(title.to_string()),
                     subtitle: None,
                     value: HomeComponentValue::Scroller(entries, None),
                 });
             }
         }
-
-        // Recently Updated
-        if let Ok(nodes) = html.select("section .tab-content .original .unit") {
-            let mut entries = Vec::new();
-            for el in nodes {
-                if let (Some(link), Some(chapter_el)) = (el.select("a")?.first(), el.select("ul.content li")?.first())
-                    && let Some(href) = link.attr("href")? {
-                        let key = if let Some(stripped) = href.strip_prefix(BASE_URL) {
-                            stripped.to_string()
-                        } else {
-                            href
-                        };
-                        let chapter_number = chapter_el.select("a span")?
-                            .first()
-                            .and_then(|e| e.text().ok())
-                            .and_then(|t| t.strip_prefix("Chap ").and_then(|s| s.parse::<f32>().ok()));
-
-                        entries.push(MangaWithChapter {
-                            manga: Manga {
-                                key: key.clone(),
-                                title: el.select(".info a")?.first().and_then(|e| e.text().ok()).unwrap_or_default(),
-                                cover: el.select(".poster img")?.first().and_then(|img| img.attr("src").ok().flatten()),
-                                authors: None,
-                                artist: None,
-                                description: None,
-                                tags: None,
-                                url: Some(format!("{}{}", BASE_URL, key)),
-                                status: Status::Unknown,
-                                content_rating: ContentRating::Safe,
-                                nsfw: 0,
-                                viewer: Viewer::Default,
-                                chapters: None,
-                            },
-                            chapter: Chapter {
-                                key: key.clone(),
-                                title: None,
-                                volume: None,
-                                chapter: chapter_number,
-                                date_updated: None,
-                                scanlator: None,
-                                url: None,
-                                lang: Some("en".to_string()),
-                                paywalled: None,
-                            },
-                        });
-                    }
-            }
-            if !entries.is_empty() {
-                components.push(HomeComponent {
-                    title: Some("Recently Updated".to_string()),
-                    subtitle: None,
-                    value: HomeComponentValue::MangaChapterList(Some(12), entries, None),
-                });
-            }
-        }
-
         Ok(HomeLayout { components })
     }
 
