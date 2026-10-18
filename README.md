@@ -40,3 +40,7 @@ Pushes to `main` that touch `plugins/` build every plugin, regenerate `index.jso
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md).
+
+## License
+
+[MIT](LICENSE)
