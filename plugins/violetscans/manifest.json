@@ -1,9 +1,9 @@
 {
     "id": "com.kunihir0.violetscans",
     "name": "VIOLETSCANS",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "min_app_version": "1.0.0",
-    "url": "https://violetscans.org/",
+    "url": "https://violetmanga.com/",
     "sourceUrl": "https://github.com/ito-community/sources",
     "contentRating": 0,
     "nsfw": 0,

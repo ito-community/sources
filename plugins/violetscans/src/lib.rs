@@ -6,7 +6,7 @@ use ito_rs::net::Request;
 use ito_rs::html::Node;
 use ito_rs::Result;
 
-const BASE_URL: &str = "https://violetscans.org";
+const BASE_URL: &str = "https://violetmanga.com";
 
 struct VioletScans;
 
