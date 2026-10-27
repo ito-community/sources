@@ -20,24 +20,20 @@ pub struct PageMeta {
 }
 
 impl Paged<ComixManga> {
-    pub fn into_page_result(self, hidden_types: &[String], hidden_terms: &[i32]) -> PageResult {
+    pub fn into_page_result(self, hidden_types: &[String]) -> PageResult {
         let has_next_page = self.meta.page < self.meta.last_page;
         PageResult {
-            entries: visible(self.items, hidden_types, hidden_terms),
+            entries: visible(self.items, hidden_types),
             has_next_page,
         }
     }
 }
 
 /// Converts manga summaries and drops hidden entries. Top lists carry no page metadata.
-pub fn visible(
-    items: Vec<ComixManga>,
-    hidden_types: &[String],
-    hidden_terms: &[i32],
-) -> Vec<Manga> {
+pub fn visible(items: Vec<ComixManga>, hidden_types: &[String]) -> Vec<Manga> {
     items
         .into_iter()
-        .filter(|manga| !manga.is_hidden(hidden_types, hidden_terms))
+        .filter(|manga| !manga.is_hidden(hidden_types))
         .map(Manga::from)
         .collect()
 }
@@ -54,23 +50,11 @@ pub struct ComixManga {
     pub author: Option<Vec<Term>>,
     pub artist: Option<Vec<Term>>,
     pub genre: Option<Vec<Term>>,
-    pub term_ids: Option<Vec<i32>>,
 }
 
 impl ComixManga {
-    pub fn is_hidden(&self, hidden_types: &[String], hidden_terms: &[i32]) -> bool {
-        if hidden_types.contains(&self.r#type) {
-            return true;
-        }
-
-        if !hidden_terms.is_empty() {
-            self.term_ids
-                .as_ref()
-                .map(|ids| ids.iter().any(|id| hidden_terms.contains(id)))
-                .unwrap_or_default()
-        } else {
-            false
-        }
+    pub fn is_hidden(&self, hidden_types: &[String]) -> bool {
+        hidden_types.contains(&self.r#type)
     }
 }
 
@@ -202,7 +186,6 @@ pub struct Poster {
 
 #[derive(Deserialize)]
 pub struct Term {
-    pub term_id: i32,
     pub title: String,
 }
 
@@ -220,7 +203,7 @@ mod tests {
         let page: Paged<ComixManga> =
             serde_json::from_str(r#"{"items":[],"meta":{"page":2,"last_page":3}}"#)
                 .expect("normalized page decodes");
-        assert!(page.into_page_result(&[], &[]).has_next_page);
+        assert!(page.into_page_result(&[]).has_next_page);
     }
 
     #[test]
@@ -228,7 +211,7 @@ mod tests {
         let page: Paged<ComixManga> =
             serde_json::from_str(r#"{"items":[],"meta":{"page":3,"last_page":3}}"#)
                 .expect("normalized page decodes");
-        assert!(!page.into_page_result(&[], &[]).has_next_page);
+        assert!(!page.into_page_result(&[]).has_next_page);
     }
 
     #[test]
@@ -292,5 +275,18 @@ mod tests {
         let pages: ChapterPages =
             serde_json::from_str(r#"{"images":[{"url":"/page.jpg"}]}"#).expect("pages decode");
         assert!(pages.into_pages().is_err());
+    }
+
+    #[test]
+    fn null_or_absent_term_lists_decode_as_none() {
+        for json in [
+            r#"{"hash_id":"stable-key","title":"Fixture","type":"manga","status":"releasing","poster":null,"author":null,"artist":null,"genre":null}"#,
+            r#"{"hash_id":"stable-key","title":"Fixture","type":"manga","status":"releasing","poster":null}"#,
+        ] {
+            let manga: ComixManga = serde_json::from_str(json).expect("detail term lists decode");
+            assert!(manga.author.is_none());
+            assert!(manga.artist.is_none());
+            assert!(manga.genre.is_none());
+        }
     }
 }

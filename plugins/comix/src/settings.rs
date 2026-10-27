@@ -13,7 +13,3 @@ pub fn dedupchapter() -> bool {
 pub fn hidden_types() -> Vec<String> {
     Vec::new()
 }
-
-pub fn hidden_terms() -> Vec<i32> {
-    Vec::new()
-}

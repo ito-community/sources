@@ -94,9 +94,9 @@ fn bridge_unavailable() -> Error {
 
 fn refusal(kind: Option<&str>, status: Option<u16>) -> Error {
     match kind {
-        Some("challenge") => {
-            Error::Host("Comix needs you to complete a verification; retry to show it.".into())
-        }
+        Some("challenge") => Error::Host(
+            "Comix needs you to complete a verification. Retry to show it; if you closed it, reopen Ito first.".into(),
+        ),
         Some("http") => Error::Host(format!(
             "Comix request failed with HTTP status {}",
             status.map_or_else(|| "unknown".to_owned(), |code| code.to_string())
@@ -170,12 +170,23 @@ mod tests {
         let http = refusal(Some("http"), Some(403)).to_string();
         let revision = refusal(Some("revision"), None).to_string();
         let shape = refusal(Some("shape"), None).to_string();
-        assert!(challenge.contains("verification"));
+        assert!(challenge.contains("if you closed it, reopen Ito first"));
         assert!(http.contains("403"));
         assert!(revision.contains("revision"));
         assert!(shape.contains("response shape"));
         assert_ne!(challenge, revision);
         assert_ne!(http, shape);
+    }
+
+    #[test]
+    fn challenge_refusal_asks_for_retry_then_reopen() {
+        let Error::Host(message) = refusal(Some("challenge"), None) else {
+            panic!("a challenge refusal is a host error");
+        };
+        assert_eq!(
+            message,
+            "Comix needs you to complete a verification. Retry to show it; if you closed it, reopen Ito first."
+        );
     }
 
     #[test]

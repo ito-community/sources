@@ -240,15 +240,19 @@ function mangaSummary(item) {
 
 function term(item) {
   object(item);
-  return { term_id: integer(item.rr), title: text(item.Sl) };
+  return { title: text(item.Sl) };
+}
+
+function termList(value) {
+  return optional(value, items => list(items, term));
 }
 
 function mangaDetail(item) {
   return {
     ...mangaSummary(item),
-    author: list(object(item).WD, term),
-    artist: list(item.A_, term),
-    genre: list(item.Mf, term)
+    author: termList(item.WD),
+    artist: termList(item.A_),
+    genre: termList(item.Mf)
   };
 }
 

@@ -30,55 +30,57 @@ fn nsfw_query() -> String {
     }
 }
 
-fn paged_result(
-    query: &str,
-    hidden_types: &[String],
-    hidden_terms: &[i32],
-) -> Result<MangaPageResult> {
+fn paged_result(query: &str, hidden_types: &[String]) -> Result<MangaPageResult> {
     let page = ComixWebView::fetch::<Paged<ComixManga>>(Operation::List, None, query)?;
-    Ok(page.into_page_result(hidden_types, hidden_terms))
+    Ok(page.into_page_result(hidden_types))
 }
 
-fn top_result(
-    query: &str,
-    hidden_types: &[String],
-    hidden_terms: &[i32],
-) -> Result<MangaPageResult> {
+fn top_result(query: &str, hidden_types: &[String]) -> Result<MangaPageResult> {
     let items = ComixWebView::fetch::<Vec<ComixManga>>(Operation::Top, None, query)?;
     Ok(MangaPageResult {
-        entries: visible(items, hidden_types, hidden_terms),
+        entries: visible(items, hidden_types),
         has_next_page: false,
     })
+}
+
+/// Decides the chapter loop's next step once `requested` has been answered: `Some(page)` fetches
+/// `page`, `None` stops. A response for another page is a host error, so the update fails whole.
+fn next_chapter_page(requested: i32, meta: &PageMeta, item_count: usize) -> Result<Option<i32>> {
+    if meta.page != requested {
+        return Err(ito_rs::Error::Host(format!(
+            "Comix chapter page {} answered page {requested}",
+            meta.page
+        )));
+    }
+    if item_count == 0 || meta.page >= meta.last_page {
+        return Ok(None);
+    }
+    Ok(Some(requested + 1))
 }
 
 impl MangaProvider for Comix {
     fn get_home() -> Result<HomeLayout> {
         let extra_qs = nsfw_query();
         let hidden_types = settings::hidden_types();
-        let hidden_terms = settings::hidden_terms();
 
         let popular_mangas = top_result(
             &format!("type=trending&days=1&limit=20{extra_qs}"),
             &hidden_types,
-            &hidden_terms,
         )?
         .entries;
         let follows_mangas = top_result(
             &format!("type=follows&days=1&limit=20{extra_qs}"),
             &hidden_types,
-            &hidden_terms,
         )?
         .entries;
         let latest_mangas = paged_result(
             &format!("scope=hot&limit=30&order[chapter_updated_at]=desc&page=1{extra_qs}"),
             &hidden_types,
-            &hidden_terms,
         )?
         .entries;
         let recent_mangas = paged_result(
             &format!("order[created_at]=desc&limit=10&page=1{extra_qs}"),
             &hidden_types,
-            &hidden_terms,
         )?
         .entries;
 
@@ -141,43 +143,36 @@ impl MangaProvider for Comix {
     fn get_manga_list(listing: Listing, page: i32) -> Result<MangaPageResult> {
         let extra_qs = nsfw_query();
         let hidden_types = settings::hidden_types();
-        let hidden_terms = settings::hidden_terms();
 
         match listing.id.as_str() {
             "Trending Webtoon" => {
-                // not fully implemented matching exact Aidoku trending
+                // comix.to's webtoon listing: manhua and manhwa types, ordered by 90-day views.
                 paged_result(
                     &format!(
                         "types[]=manhua&types[]=manhwa&order[views_90d]=desc&page={page}{extra_qs}"
                     ),
                     &hidden_types,
-                    &hidden_terms,
                 )
             }
             "Trending Manga" => paged_result(
                 &format!("types[]=manga&order[views_90d]=desc&page={page}{extra_qs}"),
                 &hidden_types,
-                &hidden_terms,
             ),
             "Most Recent Popular" => top_result(
                 &format!("type=trending&days=1&limit=50{extra_qs}"),
                 &hidden_types,
-                &hidden_terms,
             ),
             "Most Follows New Comics" => top_result(
                 &format!("type=follows&days=1&limit=50{extra_qs}"),
                 &hidden_types,
-                &hidden_terms,
             ),
             "Latest Updates (Hot)" => paged_result(
                 &format!("scope=hot&limit=30&order[chapter_updated_at]=desc&page={page}{extra_qs}"),
                 &hidden_types,
-                &hidden_terms,
             ),
             "Recently Added" => paged_result(
                 &format!("order[created_at]=desc&limit=30&page={page}{extra_qs}"),
                 &hidden_types,
-                &hidden_terms,
             ),
             _ => Err(ito_rs::Error::Unsupported),
         }
@@ -195,11 +190,7 @@ impl MangaProvider for Comix {
         params.push_str("&order[relevance]=desc");
         params.push_str(&nsfw_query());
 
-        paged_result(
-            &params,
-            &settings::hidden_types(),
-            &settings::hidden_terms(),
-        )
+        paged_result(&params, &settings::hidden_types())
     }
 
     fn get_manga_update(
@@ -237,7 +228,7 @@ impl MangaProvider for Comix {
                     Some(manga.key.as_str()),
                     &query,
                 )?;
-                let last_page_reached = json.meta.page >= json.meta.last_page;
+                let next = next_chapter_page(page, &json.meta, json.items.len())?;
                 if deduplicate {
                     for item in json.items {
                         helpers::dedup_insert(&mut chapter_map, item);
@@ -245,10 +236,8 @@ impl MangaProvider for Comix {
                 } else {
                     chapter_list.extend(json.items);
                 }
-                if last_page_reached {
-                    break;
-                }
-                page += 1;
+                let Some(next_page) = next else { break };
+                page = next_page;
             }
 
             let mut chapters: Vec<Chapter> = if deduplicate {
@@ -290,3 +279,35 @@ impl MangaProvider for Comix {
 }
 
 export_manga_plugin!(Comix);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn meta(page: i32, last_page: i32) -> PageMeta {
+        PageMeta { page, last_page }
+    }
+
+    #[test]
+    fn chapter_loop_fetches_the_following_page_while_pages_remain() {
+        assert_eq!(next_chapter_page(1, &meta(1, 3), 100).ok(), Some(Some(2)));
+    }
+
+    #[test]
+    fn chapter_loop_stops_on_the_last_page() {
+        assert_eq!(next_chapter_page(3, &meta(3, 3), 100).ok(), Some(None));
+    }
+
+    #[test]
+    fn chapter_loop_stops_on_an_empty_page_before_the_last() {
+        assert_eq!(next_chapter_page(1, &meta(1, 3), 0).ok(), Some(None));
+    }
+
+    #[test]
+    fn chapter_response_for_another_page_fails_the_update() {
+        assert!(matches!(
+            next_chapter_page(2, &meta(1, 3), 100),
+            Err(ito_rs::Error::Host(_))
+        ));
+    }
+}

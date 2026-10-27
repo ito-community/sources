@@ -12,7 +12,6 @@ const { fileURLToPath, pathToFileURL } = require("node:url");
 const bridgeSource = fs.readFileSync(path.join(__dirname, "../src/bridge.js"), "utf8");
 const AsyncFunction = (async () => {}).constructor;
 const SITE_ORIGIN = "https://comix.to";
-const SELECTORS = { preload: 'link[rel~="modulepreload"]', scripts: "script[src]" };
 
 const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "comix-bridge-"));
 after(() => fs.rmSync(fixtureDir, { recursive: true, force: true }));
@@ -20,7 +19,7 @@ fs.writeFileSync(path.join(fixtureDir, "package.json"), '{"type":"module"}\n');
 fs.writeFileSync(path.join(fixtureDir, "recorder.js"), `export const calls = [];
 export const responses = new Map();
 export function call(name, args) {
-  calls.push({ name, args: JSON.parse(JSON.stringify(args)) });
+  calls.push({ name, args });
   const respond = responses.get(name);
   if (respond === undefined) throw new Error("no fixture response for " + name);
   return respond(...args);
@@ -51,19 +50,24 @@ function setGlobal(name, value) {
 }
 
 // Installs the page: its origin/URL, the resources and module references it lists, the frames its
-// document holds, an optional itoShowPage handler, and a window whose listeners a test can fire
-// (the site's captcha event).
+// document holds (each { src, inDialog }), an optional itoShowPage handler, and a window whose
+// listeners a test can fire (the site's captcha event).
 function page({ origin = "null", href = `${SITE_ORIGIN}/`, resources = [], preload = [], scripts = [], moduleScripts = [], frames = [], showPage } = {}) {
   const listeners = new Map();
   setGlobal("location", { origin, href });
   setGlobal("performance", { getEntriesByType: () => resources.map(name => ({ name })) });
+  const dialogFrames = frames.filter(frame => frame.inDialog).map(frame => ({ src: frame.src }));
+  const queries = new Map([
+    ['link[rel~="modulepreload"]', () => preload.map(url => ({ href: url }))],
+    ["script[src]", () => scripts.map(url => ({ src: url }))],
+    ['script[type="module"][src]', () => moduleScripts.map(url => ({ src: url }))],
+    ['[role="dialog"] iframe', () => dialogFrames]
+  ]);
   setGlobal("document", {
     querySelectorAll: selector => {
-      if (selector.startsWith("link")) return preload.map(value => ({ href: value }));
-      if (selector.includes('type="module"')) return moduleScripts.map(value => ({ src: value }));
-      if (selector.startsWith("script")) return scripts.map(value => ({ src: value }));
-      if (selector.includes("iframe")) return frames.map(value => ({ src: value }));
-      return [];
+      const query = queries.get(selector);
+      if (query === undefined) throw new Error(`unexpected selector: ${selector}`);
+      return query();
     }
   });
   setGlobal("window", {
@@ -87,6 +91,10 @@ function page({ origin = "null", href = `${SITE_ORIGIN}/`, resources = [], prelo
   return { emit: type => { for (const listener of [...(listeners.get(type) ?? [])]) listener({ detail: {} }); } };
 }
 
+// A frame the document holds: inside a [role="dialog"] element or outside any dialog.
+const dialogFrame = src => ({ src, inDialog: true });
+const pageFrame = src => ({ src, inDialog: false });
+
 // Runs the composed body exactly as the host prepends it and returns the raw reply string.
 async function runRaw(request) {
   const script = `//# ito-async\nconst request = ${JSON.stringify(request)};\n${bridgeSource}`;
@@ -104,6 +112,16 @@ async function run(request) {
 async function reset() {
   (await recorder).calls.length = 0;
   (await recorder).responses.clear();
+}
+
+// Own keys and values of recorded arguments. Null prototypes and undefined properties are kept as the
+// bridge sent them: the assertions see the real objects, not a JSON copy of them.
+function plain(value) {
+  if (Array.isArray(value)) return value.map(plain);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.keys(value).map(key => [key, plain(value[key])]));
+  }
+  return value;
 }
 
 function request(site, overrides = {}) {
@@ -168,7 +186,7 @@ test("list operation sends literal params to the site's list facade and adapts t
   const reply = await run(request(site, { query }));
 
   assert.deepEqual(reply, { ok: true, data: { items: [summary], meta: { page: 2, last_page: 3 } } });
-  assert.deepEqual((await recorder).calls, [{
+  assert.deepEqual(plain((await recorder).calls), [{
     name: "h0",
     args: [{ page: 2, keyword: "O'Reilly & café [edition]", genres: [-8, 13], order: { relevance: "desc" } }]
   }]);
@@ -183,7 +201,7 @@ test("numeric search text stays text while numeric filters become numbers", asyn
   const reply = await run(request(site, { query: "keyword=00123&limit=30" }));
 
   assert.equal(reply.ok, true);
-  assert.deepEqual((await recorder).calls[0].args, [{ keyword: "00123", limit: 30 }]);
+  assert.deepEqual(plain((await recorder).calls[0].args), [{ keyword: "00123", limit: 30 }]);
 });
 
 test("top operation calls the site's top facade with its own trending parameters", async () => {
@@ -195,7 +213,7 @@ test("top operation calls the site's top facade with its own trending parameters
   const reply = await run(request(site, { operation: "top", query: "type=trending&days=1&limit=20&genres[]=-87264" }));
 
   assert.deepEqual(reply, { ok: true, data: [summary] });
-  assert.deepEqual((await recorder).calls, [{ name: "Nf", args: [{ type: "trending", days: 1, limit: 20, genres: [-87264] }] }]);
+  assert.deepEqual(plain((await recorder).calls), [{ name: "Nf", args: [{ type: "trending", days: 1, limit: 20, genres: [-87264] }] }]);
 });
 
 test("detail operation maps the site's term DTOs to authors, artists and genres", async () => {
@@ -215,12 +233,29 @@ test("detail operation maps the site's term DTOs to authors, artists and genres"
     ok: true,
     data: {
       ...summary,
-      author: [{ term_id: 7, title: "Auth" }],
+      author: [{ title: "Auth" }],
       artist: [],
-      genre: [{ term_id: 8, title: "Action" }]
+      genre: [{ title: "Action" }]
     }
   });
-  assert.deepEqual((await recorder).calls, [{ name: "kX", args: ["hid-1"] }]);
+  assert.deepEqual(plain((await recorder).calls), [{ name: "kX", args: ["hid-1"] }]);
+});
+
+test("detail with null or absent term lists maps them to null, and a non-array list is still refused", async () => {
+  await reset();
+  const site = writeSite("detail-lists");
+  page({ resources: [site.href] });
+  const detail = { operation: "detail", key: "hid-1" };
+  const nullable = { ...summary, author: null, artist: null, genre: null };
+
+  (await recorder).responses.set("kX", () => ({ ...mangaDto(), WD: null, A_: null, Mf: null }));
+  assert.deepEqual(await run(request(site, detail)), { ok: true, data: nullable });
+
+  (await recorder).responses.set("kX", () => mangaDto());
+  assert.deepEqual(await run(request(site, detail)), { ok: true, data: nullable });
+
+  (await recorder).responses.set("kX", () => ({ ...mangaDto(), WD: "Auth" }));
+  assert.deepEqual(await run(request(site, detail)), { ok: false, kind: "shape" });
 });
 
 test("chapters operation passes page, limit and order to the site's chapter facade", async () => {
@@ -247,7 +282,7 @@ test("chapters operation passes page, limit and order to the site's chapter faca
       meta: { page: 1, last_page: 2 }
     }
   });
-  assert.deepEqual((await recorder).calls, [{ name: "dq", args: ["hid-1", { limit: 100, page: 1, order: { number: "desc" } }] }]);
+  assert.deepEqual(plain((await recorder).calls), [{ name: "dq", args: ["hid-1", { limit: 100, page: 1, order: { number: "desc" } }] }]);
 });
 
 test("pages operation returns direct image URLs, resolving relative ones against the page", async () => {
@@ -261,7 +296,7 @@ test("pages operation returns direct image URLs, resolving relative ones against
   const reply = await run(request(site, { operation: "pages", key: "501" }));
 
   assert.deepEqual(reply, { ok: true, data: { images: [{ url: "https://cdn.test/1.jpg" }, { url: `${SITE_ORIGIN}/2.jpg` }] } });
-  assert.deepEqual((await recorder).calls, [{ name: "n.kX", args: ["501"] }]);
+  assert.deepEqual(plain((await recorder).calls), [{ name: "n.kX", args: ["501"] }]);
 });
 
 test("non-web page URLs are refused as a shape failure, never passed through", async () => {
@@ -413,7 +448,7 @@ test("a verification dialog already open when the call starts asks the host, and
   const site = writeSite("already-shown");
   const gate = await parkSiteCall("h0");
   const asked = [];
-  page({ resources: [site.href], frames: [`${SITE_ORIGIN}/@waf/challenge`], showPage: value => {
+  page({ resources: [site.href], frames: [dialogFrame(`${SITE_ORIGIN}/@waf/challenge`)], showPage: value => {
     asked.push(value);
     return true;
   } });
@@ -430,7 +465,7 @@ test("a verification dialog already open when the call starts is refused when th
   await reset();
   const site = writeSite("already-declined");
   await parkSiteCall("h0");
-  page({ resources: [site.href], frames: [`${SITE_ORIGIN}/@waf/challenge`], showPage: () => false });
+  page({ resources: [site.href], frames: [dialogFrame(`${SITE_ORIGIN}/@waf/challenge`)], showPage: () => false });
 
   assert.deepEqual(JSON.parse(await runRaw(request(site, { query: "page=1" }))), { ok: false, kind: "challenge" });
 });
@@ -442,7 +477,25 @@ test("a call without a verification frame never asks the host, even with other f
   const asked = [];
   page({
     resources: [site.href],
-    frames: ["https://other.invalid/@waf/challenge", `${SITE_ORIGIN}/title/hid-1`],
+    frames: [pageFrame("https://other.invalid/@waf/challenge"), pageFrame(`${SITE_ORIGIN}/title/hid-1`)],
+    showPage: value => {
+      asked.push(value);
+      return true;
+    }
+  });
+
+  assert.deepEqual(await run(request(site, { query: "page=1" })), { ok: true, data: { items: [], meta: { page: 1, last_page: 1 } } });
+  assert.deepEqual(asked, []);
+});
+
+test("a same-origin verification route outside a dialog does not ask the host", async () => {
+  await reset();
+  const site = writeSite("loose-challenge");
+  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  const asked = [];
+  page({
+    resources: [site.href],
+    frames: [pageFrame(`${SITE_ORIGIN}/@waf/challenge`)],
     showPage: value => {
       asked.push(value);
       return true;
