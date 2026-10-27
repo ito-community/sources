@@ -10,7 +10,7 @@ const ASYNC_MARKER: &str = "//# ito-async\n";
 const ASYNC_PROBE: &str = "//# ito-async\nreturn \"ready\";";
 /// SHA-256 of the captured site API client that the DTO mappings in `bridge.js` were derived from.
 const API_CLIENT_REVISION: &str =
-    "e6baa686c07629c4ad8660d64552ff549eb7e85b972564d8bc31267c65cc6588";
+    "b4fad00871ee6d39e14c1aef72051e9f4a58c6268d656084f7b0f78f4fe1c392";
 const UPDATE_ITO: &str = "Comix requires Ito 1.4.0 or newer for async WebView support; update Ito";
 
 /// Whether this plugin instance has loaded the site page. A host fails a script run before any

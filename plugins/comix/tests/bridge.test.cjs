@@ -34,7 +34,7 @@ function sha256(file) {
 }
 
 // Writes a site client module whose facades forward every call to the recorder.
-function writeSite(name, { facade = ["h0", "Nf", "kX", "dq"], pages = ["kX"] } = {}) {
+function writeSite(name, { facade = ["o3", "nb", "E5", "iF"], pages = ["E5"] } = {}) {
   const file = path.join(fixtureDir, `apicore-${name}-${fixtureCount++}.js`);
   const members = (names, prefix) =>
     names.map(member => `${JSON.stringify(member)}: (...args) => call(${JSON.stringify(prefix + member)}, args)`).join(", ");
@@ -147,13 +147,13 @@ async function parkSiteCall(name) {
 }
 
 const mangaDto = (overrides = {}) => ({
-  sk: "hid-1",
-  Sl: "One",
-  zD: "manga",
-  Gh: "releasing",
-  wM: null,
-  FJ: 12,
-  _5: { VP: "https://img.test/m.jpg", mJ: null },
+  qa: "hid-1",
+  Rv: "One",
+  vI: "manga",
+  QZ: "releasing",
+  vl: null,
+  Zk: 12,
+  G3: { Qq: "https://img.test/m.jpg", XN: null },
   ...overrides
 });
 
@@ -170,9 +170,9 @@ const summary = {
 test("list operation sends literal params to the site's list facade and adapts the envelope once", async () => {
   await reset();
   const site = writeSite("list");
-  (await recorder).responses.set("h0", () => ({
-    t9: [mangaDto()],
-    zV: { cC: 2, kk: 3, iK: 30, Fq: 12, yu: 13, $F: 24, __: true, tW: true }
+  (await recorder).responses.set("o3", () => ({
+    Kh: [mangaDto()],
+    kZ: { mM: 2, DP: 3, Kn: 30, IN: 12, Qs: 13, oo: 24, Su: true, pI: true }
   }));
   page({ resources: [site.href] });
   const query = new URLSearchParams([
@@ -184,10 +184,10 @@ test("list operation sends literal params to the site's list facade and adapts t
   ]).toString();
 
   const reply = await run(request(site, { query }));
-
   assert.deepEqual(reply, { ok: true, data: { items: [summary], meta: { page: 2, last_page: 3 } } });
+
   assert.deepEqual(plain((await recorder).calls), [{
-    name: "h0",
+    name: "o3",
     args: [{ page: 2, keyword: "O'Reilly & café [edition]", genres: [-8, 13], order: { relevance: "desc" } }]
   }]);
 });
@@ -195,7 +195,7 @@ test("list operation sends literal params to the site's list facade and adapts t
 test("numeric search text stays text while numeric filters become numbers", async () => {
   await reset();
   const site = writeSite("numeric");
-  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  (await recorder).responses.set("o3", () => ({ Kh: [], kZ: { mM: 1, DP: 1 } }));
   page({ resources: [site.href] });
 
   const reply = await run(request(site, { query: "keyword=00123&limit=30" }));
@@ -207,23 +207,23 @@ test("numeric search text stays text while numeric filters become numbers", asyn
 test("top operation calls the site's top facade with its own trending parameters", async () => {
   await reset();
   const site = writeSite("top");
-  (await recorder).responses.set("Nf", () => [mangaDto()]);
+  (await recorder).responses.set("nb", () => [mangaDto()]);
   page({ resources: [site.href] });
 
   const reply = await run(request(site, { operation: "top", query: "type=trending&days=1&limit=20&genres[]=-87264" }));
 
   assert.deepEqual(reply, { ok: true, data: [summary] });
-  assert.deepEqual(plain((await recorder).calls), [{ name: "Nf", args: [{ type: "trending", days: 1, limit: 20, genres: [-87264] }] }]);
+  assert.deepEqual(plain((await recorder).calls), [{ name: "nb", args: [{ type: "trending", days: 1, limit: 20, genres: [-87264] }] }]);
 });
 
 test("detail operation maps the site's term DTOs to authors, artists and genres", async () => {
   await reset();
   const site = writeSite("detail");
-  (await recorder).responses.set("kX", () => ({
+  (await recorder).responses.set("E5", () => ({
     ...mangaDto(),
-    WD: [{ rr: 7, Sl: "Auth" }],
-    A_: [],
-    Mf: [{ rr: 8, Sl: "Action" }]
+    Gd: [{ Xl: 7, Rv: "Auth" }],
+    VC: [],
+    xI: [{ Xl: 8, Rv: "Action" }]
   }));
   page({ resources: [site.href] });
 
@@ -238,7 +238,7 @@ test("detail operation maps the site's term DTOs to authors, artists and genres"
       genre: [{ title: "Action" }]
     }
   });
-  assert.deepEqual(plain((await recorder).calls), [{ name: "kX", args: ["hid-1"] }]);
+  assert.deepEqual(plain((await recorder).calls), [{ name: "E5", args: ["hid-1"] }]);
 });
 
 test("detail with null or absent term lists maps them to null, and a non-array list is still refused", async () => {
@@ -248,25 +248,25 @@ test("detail with null or absent term lists maps them to null, and a non-array l
   const detail = { operation: "detail", key: "hid-1" };
   const nullable = { ...summary, author: null, artist: null, genre: null };
 
-  (await recorder).responses.set("kX", () => ({ ...mangaDto(), WD: null, A_: null, Mf: null }));
+  (await recorder).responses.set("E5", () => ({ ...mangaDto(), Gd: null, VC: null, xI: null }));
   assert.deepEqual(await run(request(site, detail)), { ok: true, data: nullable });
 
-  (await recorder).responses.set("kX", () => mangaDto());
+  (await recorder).responses.set("E5", () => mangaDto());
   assert.deepEqual(await run(request(site, detail)), { ok: true, data: nullable });
 
-  (await recorder).responses.set("kX", () => ({ ...mangaDto(), WD: "Auth" }));
+  (await recorder).responses.set("E5", () => ({ ...mangaDto(), Gd: "Auth" }));
   assert.deepEqual(await run(request(site, detail)), { ok: false, kind: "shape" });
 });
 
 test("chapters operation passes page, limit and order to the site's chapter facade", async () => {
   await reset();
   const site = writeSite("chapters");
-  (await recorder).responses.set("dq", () => ({
-    t9: [
-      { yH: 501, Fl: 1, _x: 1.5, Yl: null, ek: "", UC: "en", e8: false, hi: 4, gx: "", HU: null, Jj: null, q4: "x" },
-      { yH: 502, Fl: 1, _x: 2, Yl: null, ek: "Two", UC: "en", e8: true, hi: 0, gx: "", HU: 9, Jj: { HU: 9, ek: "Group" }, q4: "y" }
+  (await recorder).responses.set("iF", () => ({
+    Kh: [
+      { Lc: 501, p7: null, uR: 1.5, HY: null, K3: "", jI: 4, jq: false, Ix: null, _u: "x" },
+      { Lc: 502, p7: 9, uR: 2, HY: null, K3: "Two", jI: 0, jq: true, Ix: { p7: 9, K3: "Group" }, _u: "y" }
     ],
-    zV: { cC: 1, kk: 2 }
+    kZ: { mM: 1, DP: 2 }
   }));
   page({ resources: [site.href] });
 
@@ -282,27 +282,27 @@ test("chapters operation passes page, limit and order to the site's chapter faca
       meta: { page: 1, last_page: 2 }
     }
   });
-  assert.deepEqual(plain((await recorder).calls), [{ name: "dq", args: ["hid-1", { limit: 100, page: 1, order: { number: "desc" } }] }]);
+  assert.deepEqual(plain((await recorder).calls), [{ name: "iF", args: ["hid-1", { limit: 100, page: 1, order: { number: "desc" } }] }]);
 });
 
 test("pages operation returns direct image URLs, resolving relative ones against the page", async () => {
   await reset();
   const site = writeSite("pages");
-  (await recorder).responses.set("n.kX", () => ({
-    rB: [{ q4: "https://cdn.test/1.jpg", FW: 1, V1: 1 }, { q4: "/2.jpg", FW: 1, V1: 1 }]
+  (await recorder).responses.set("n.E5", () => ({
+    CP: [{ _u: "https://cdn.test/1.jpg", tu: [1], eR: "alt", Da: "node", hf: 100, _Q: 200 }, { _u: "/2.jpg", tu: [], eR: "", Da: "node", hf: 100, _Q: 200 }]
   }));
   page({ resources: [site.href], href: `${SITE_ORIGIN}/title/hid-1/501` });
 
   const reply = await run(request(site, { operation: "pages", key: "501" }));
 
   assert.deepEqual(reply, { ok: true, data: { images: [{ url: "https://cdn.test/1.jpg" }, { url: `${SITE_ORIGIN}/2.jpg` }] } });
-  assert.deepEqual(plain((await recorder).calls), [{ name: "n.kX", args: ["501"] }]);
+  assert.deepEqual(plain((await recorder).calls), [{ name: "n.E5", args: ["501"] }]);
 });
 
 test("non-web page URLs are refused as a shape failure, never passed through", async () => {
   await reset();
   const site = writeSite("scheme");
-  (await recorder).responses.set("n.kX", () => ({ rB: [{ q4: "javascript:alert(1)" }] }));
+  (await recorder).responses.set("n.E5", () => ({ CP: [{ _u: "javascript:alert(1)", tu: [], eR: "", Da: "node", hf: 1, _Q: 1 }] }));
   page({ resources: [site.href] });
 
   assert.deepEqual(await run(request(site, { operation: "pages", key: "501" })), { ok: false, kind: "shape" });
@@ -311,7 +311,7 @@ test("non-web page URLs are refused as a shape failure, never passed through", a
 test("a module whose hash differs from the pinned revision is refused before any site call", async () => {
   await reset();
   const site = writeSite("revision");
-  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  (await recorder).responses.set("o3", () => ({ Kh: [], kZ: { mM: 1, DP: 1 } }));
   page({ resources: [site.href] });
 
   assert.deepEqual(await run(request(site, { revision: "0".repeat(64) })), { ok: false, kind: "revision" });
@@ -320,7 +320,7 @@ test("a module whose hash differs from the pinned revision is refused before any
 
 test("a missing facade method is refused rather than guessed at", async () => {
   await reset();
-  const site = writeSite("nofacade", { facade: ["Nf", "kX", "dq"] });
+  const site = writeSite("nofacade", { facade: ["nb", "E5", "iF"] });
   page({ resources: [site.href] });
 
   assert.deepEqual(await run(request(site, { query: "page=1" })), { ok: false, kind: "missing-facade" });
@@ -333,7 +333,7 @@ test("only the read-only allowlist is dispatched; arbitrary facade names are ref
   page({ resources: [site.href] });
 
   assert.deepEqual(await run(request(site, { operation: "invoke", query: "" })), { ok: false, kind: "operation" });
-  assert.deepEqual(await run(request(site, { operation: "h0", query: "" })), { ok: false, kind: "operation" });
+  assert.deepEqual(await run(request(site, { operation: "o3", query: "" })), { ok: false, kind: "operation" });
   assert.deepEqual(await run(request(site, { operation: "constructor", query: "" })), { ok: false, kind: "operation" });
   assert.equal((await recorder).calls.length, 0);
 });
@@ -351,7 +351,7 @@ test("no client module, or more than one, is refused as missing", async () => {
 test("client candidates from another origin are ignored", async () => {
   await reset();
   const site = writeSite("foreign");
-  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  (await recorder).responses.set("o3", () => ({ Kh: [], kZ: { mM: 1, DP: 1 } }));
   page({ resources: ["https://other.invalid/_app/apicore-x.js", site.href] });
 
   assert.deepEqual(await run(request(site)), { ok: true, data: { items: [], meta: { page: 1, last_page: 1 } } });
@@ -360,7 +360,7 @@ test("client candidates from another origin are ignored", async () => {
 test("the client is found through the main module when the page lists no preload", async () => {
   await reset();
   const site = writeSite("linked");
-  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  (await recorder).responses.set("o3", () => ({ Kh: [], kZ: { mM: 1, DP: 1 } }));
   const mainFile = path.join(fixtureDir, `main-${fixtureCount++}.js`);
   fs.writeFileSync(mainFile, `export const boot = () => import("./${path.basename(site.file)}");\n`);
   page({ moduleScripts: [pathToFileURL(mainFile).href] });
@@ -376,7 +376,7 @@ test("a challenge during a call rejects the operation instead of leaving it park
   const invoked = new Promise(resolve => {
     started = resolve;
   });
-  (await recorder).responses.set("h0", () => {
+  (await recorder).responses.set("o3", () => {
     started();
     return new Promise(() => {});
   });
@@ -392,7 +392,7 @@ test("a challenge during a call rejects the operation instead of leaving it park
 test("a host reply of true keeps the call pending until the site resolves it", async () => {
   await reset();
   const site = writeSite("shown");
-  const gate = await parkSiteCall("h0");
+  const gate = await parkSiteCall("o3");
   const asked = [];
   const sitePage = page({ resources: [site.href], showPage: value => {
     asked.push(value);
@@ -402,7 +402,7 @@ test("a host reply of true keeps the call pending until the site resolves it", a
 
   await gate.arrived;
   sitePage.emit("waf:captcha:open");
-  gate.resolve({ t9: [mangaDto()], zV: { cC: 1, kk: 1 } });
+  gate.resolve({ Kh: [mangaDto()], kZ: { mM: 1, DP: 1 } });
 
   assert.deepEqual(JSON.parse(await pending), { ok: true, data: { items: [summary], meta: { page: 1, last_page: 1 } } });
   assert.deepEqual(asked, [null]);
@@ -411,7 +411,7 @@ test("a host reply of true keeps the call pending until the site resolves it", a
 test("a host reply of false rejects the call with a challenge", async () => {
   await reset();
   const site = writeSite("declined");
-  const gate = await parkSiteCall("h0");
+  const gate = await parkSiteCall("o3");
   const sitePage = page({ resources: [site.href], showPage: () => false });
   const pending = runRaw(request(site, { query: "page=1" }));
 
@@ -432,7 +432,7 @@ test("a rejecting, throwing or missing host handler counts as a refusal", async 
   for (const [label, showPage] of handlers) {
     await reset();
     const site = writeSite(`refusal-${label}`);
-    const gate = await parkSiteCall("h0");
+    const gate = await parkSiteCall("o3");
     const sitePage = page({ resources: [site.href], showPage });
     const pending = runRaw(request(site, { query: "page=1" }));
 
@@ -446,7 +446,7 @@ test("a rejecting, throwing or missing host handler counts as a refusal", async 
 test("a verification dialog already open when the call starts asks the host, and waits when shown", async () => {
   await reset();
   const site = writeSite("already-shown");
-  const gate = await parkSiteCall("h0");
+  const gate = await parkSiteCall("o3");
   const asked = [];
   page({ resources: [site.href], frames: [dialogFrame(`${SITE_ORIGIN}/@waf/challenge`)], showPage: value => {
     asked.push(value);
@@ -455,7 +455,7 @@ test("a verification dialog already open when the call starts asks the host, and
   const pending = runRaw(request(site, { query: "page=1" }));
 
   await gate.arrived;
-  gate.resolve({ t9: [], zV: { cC: 1, kk: 1 } });
+  gate.resolve({ Kh: [], kZ: { mM: 1, DP: 1 } });
 
   assert.deepEqual(JSON.parse(await pending), { ok: true, data: { items: [], meta: { page: 1, last_page: 1 } } });
   assert.deepEqual(asked, [null]);
@@ -464,7 +464,7 @@ test("a verification dialog already open when the call starts asks the host, and
 test("a verification dialog already open when the call starts is refused when the host declines", async () => {
   await reset();
   const site = writeSite("already-declined");
-  await parkSiteCall("h0");
+  await parkSiteCall("o3");
   page({ resources: [site.href], frames: [dialogFrame(`${SITE_ORIGIN}/@waf/challenge`)], showPage: () => false });
 
   assert.deepEqual(JSON.parse(await runRaw(request(site, { query: "page=1" }))), { ok: false, kind: "challenge" });
@@ -473,7 +473,7 @@ test("a verification dialog already open when the call starts is refused when th
 test("a call without a verification frame never asks the host, even with other frames open", async () => {
   await reset();
   const site = writeSite("quiet");
-  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  (await recorder).responses.set("o3", () => ({ Kh: [], kZ: { mM: 1, DP: 1 } }));
   const asked = [];
   page({
     resources: [site.href],
@@ -491,7 +491,7 @@ test("a call without a verification frame never asks the host, even with other f
 test("a same-origin verification route outside a dialog does not ask the host", async () => {
   await reset();
   const site = writeSite("loose-challenge");
-  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  (await recorder).responses.set("o3", () => ({ Kh: [], kZ: { mM: 1, DP: 1 } }));
   const asked = [];
   page({
     resources: [site.href],
@@ -509,7 +509,7 @@ test("a same-origin verification route outside a dialog does not ask the host", 
 test("a verification the user cancels after the host showed it is still a challenge", async () => {
   await reset();
   const site = writeSite("cancelled");
-  const gate = await parkSiteCall("h0");
+  const gate = await parkSiteCall("o3");
   const sitePage = page({ resources: [site.href], showPage: () => true });
   const pending = runRaw(request(site, { query: "page=1" }));
 
@@ -524,12 +524,12 @@ test("a cancelled captcha is a challenge, and HTTP failures keep their status wi
   await reset();
   const site = writeSite("failures");
   page({ resources: [site.href] });
-  (await recorder).responses.set("h0", () => {
+  (await recorder).responses.set("o3", () => {
     throw new Error("waf_captcha_cancelled");
   });
   assert.deepEqual(await run(request(site, { query: "page=1" })), { ok: false, kind: "challenge" });
 
-  (await recorder).responses.set("h0", () => {
+  (await recorder).responses.set("o3", () => {
     throw Object.assign(new Error("forbidden"), { response: { status: 403, data: { secret: "do-not-leak" } } });
   });
   const raw = await runRaw(request(site, { query: "page=1" }));
@@ -540,9 +540,9 @@ test("a cancelled captcha is a challenge, and HTTP failures keep their status wi
 test("a chapter without a required flag fails the whole operation rather than returning partial items", async () => {
   await reset();
   const site = writeSite("partial");
-  (await recorder).responses.set("dq", () => ({
-    t9: [{ yH: 501, _x: 1, ek: "", hi: 0, HU: null, Jj: null, q4: "x" }],
-    zV: { cC: 1, kk: 2 }
+  (await recorder).responses.set("iF", () => ({
+    Kh: [{ Lc: 501, p7: null, uR: 1, K3: "", jI: 0, Ix: null }],
+    kZ: { mM: 1, DP: 2 }
   }));
   page({ resources: [site.href] });
 
@@ -552,7 +552,7 @@ test("a chapter without a required flag fails the whole operation rather than re
 test("page metadata is required: a missing current page is not defaulted", async () => {
   await reset();
   const site = writeSite("meta");
-  (await recorder).responses.set("h0", () => ({ t9: [], zV: { kk: 3 } }));
+  (await recorder).responses.set("o3", () => ({ Kh: [], kZ: { DP: 3 } }));
   page({ resources: [site.href] });
 
   assert.deepEqual(await run(request(site, { query: "page=1" })), { ok: false, kind: "shape" });
