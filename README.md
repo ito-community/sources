@@ -19,6 +19,7 @@ https://ito-community.github.io/sources
 | Asura Scans | manga | asurascans.com |
 | Atsumaru | manga | atsu.moe |
 | Comix | manga | comix.to |
+| HiAnime | anime | hianime.ms |
 | LuaComics | manga | luacomic.org |
 | MangaFire | manga | mangafire.to |
 | Novel Fire | novel | novelfire.net |

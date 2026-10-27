@@ -1,0 +1,19 @@
+{
+    "id": "com.kunihir0.hianime",
+    "name": "HIANIME",
+    "version": "1.0.0",
+    "min_app_version": "1.0.0",
+    "url": "https://hianime.ms/",
+    "sourceUrl": "https://github.com/ito-community/sources/plugins/hianime",
+    "contentRating": 0,
+    "nsfw": 0,
+    "language": "en",
+    "languages": [
+        "en"
+    ],
+    "type": "anime",
+    "author": "kunihir0",
+    "description": "Browse HiAnime's catalog and watch episodes with its Ryu server, sub and dub.",
+    "archived": false,
+    "archived_reason": ""
+}
