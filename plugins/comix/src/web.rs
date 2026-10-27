@@ -2,6 +2,7 @@ use crate::BASE_URL;
 use ito_rs::webview::Webview;
 use ito_rs::{Error, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const BRIDGE: &str = include_str!("bridge.js");
 /// Opt-in marker: the host runs the script as an async function body and awaits its promise.
@@ -11,6 +12,11 @@ const ASYNC_PROBE: &str = "//# ito-async\nreturn \"ready\";";
 const API_CLIENT_REVISION: &str =
     "e6baa686c07629c4ad8660d64552ff549eb7e85b972564d8bc31267c65cc6588";
 const UPDATE_ITO: &str = "Comix requires Ito 1.4.0 or newer for async WebView support; update Ito";
+
+/// Whether this plugin instance has loaded the site page. A host fails a script run before any
+/// page exists (and the runner aborts the call on a failed host call), so the first call loads
+/// the page instead of checking it. The host keeps its web view once created.
+static PAGE_LOADED: AtomicBool = AtomicBool::new(false);
 
 /// Read-only site operations the bridge accepts. Any other name is refused.
 #[derive(Clone, Copy, Serialize)]
@@ -72,12 +78,16 @@ impl ComixWebView {
 
 /// Loads the site page when needed, then requires the async marker to work on it.
 fn ensure_page() -> Result<()> {
-    let origin = serde_json::to_string(BASE_URL).map_err(|_| helper_error("origin"))?;
-    let on_origin = format!("location.origin === {origin} ? 'ready' : 'missing'");
-    if Webview::execute_js(&on_origin).is_ok_and(|state| state == "ready") {
-        return Ok(());
+    if PAGE_LOADED.load(Ordering::Relaxed) {
+        // Another plugin may have navigated the shared web view since; check before reusing it.
+        let origin = serde_json::to_string(BASE_URL).map_err(|_| helper_error("origin"))?;
+        let on_origin = format!("location.origin === {origin} ? 'ready' : 'missing'");
+        if Webview::execute_js(&on_origin)? == "ready" {
+            return Ok(());
+        }
     }
     Webview::load_url(BASE_URL)?;
+    PAGE_LOADED.store(true, Ordering::Relaxed);
     match Webview::execute_js(ASYNC_PROBE) {
         Ok(state) if state == "ready" => Ok(()),
         _ => Err(Error::Host(UPDATE_ITO.into())),
