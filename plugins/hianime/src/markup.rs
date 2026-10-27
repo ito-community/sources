@@ -1,9 +1,12 @@
 //! Small string scanner for HiAnime's server-rendered markup.
 //!
-//! The host DOM (`ito_rs::html::Node`) is a wasm import, so it cannot run in native
-//! unit tests. This scanner covers the subset the parsers need: start tags with quoted
-//! or bare attributes, the matching end tag of an element, and text extraction. It skips
-//! comments and the raw bodies of `script` and `style`.
+//! The host DOM (`ito_rs::html`) is reached only through wasm imports, so it cannot run in
+//! native unit tests, and the parsers would have no way to be tested. This scanner covers the
+//! subset they need: start tags with quoted or bare attributes, the matching end tag of an
+//! element, and text extraction. It skips comments and the raw bodies of `script` and `style`.
+//!
+//! An element with no matching end tag runs up to the next element of its name, or to the end
+//! of the document. The siblings after it stay visible to the sequential scans in `parse`.
 
 /// A start tag: its lowercase-insensitive name and raw attribute text.
 #[derive(Debug, Clone, Copy)]
@@ -136,43 +139,76 @@ fn element<'a>(html: &'a str, tag: Tag<'a>) -> Element<'a> {
             after: body,
         };
     }
-    match find_close(body, tag.name) {
+    let (inner_end, after_start) = match find_close(body, tag.name) {
         Some(close) => {
             let after_start = body[close..]
                 .find('>')
                 .map_or(body.len(), |gt| close + gt + 1);
-            Element {
-                tag,
-                inner: &body[..close],
-                after: &body[after_start..],
-            }
+            (close, after_start)
         }
-        None => Element {
-            tag,
-            inner: body,
-            after: "",
-        },
+        // Unclosed: the element runs to the next element of its name, or to the document end.
+        None => {
+            let next = find_tag(body, 0, tag.name, false).unwrap_or(body.len());
+            (next, next)
+        }
+    };
+    Element {
+        tag,
+        inner: &body[..inner_end],
+        after: &body[after_start..],
     }
 }
 
-/// Finds `</name` followed by `>` or whitespace, so `</abbr>` never closes `a`.
+/// Returns the offset of the end tag that closes an element named `name` whose body is `body`.
+///
+/// Nested elements of the same name are counted, so the outer end tag closes the outer element.
 fn find_close(body: &str, name: &str) -> Option<usize> {
-    let bytes = body.as_bytes();
+    let mut depth = 0usize;
     let mut from = 0;
-    while let Some(offset) = body[from..].find("</") {
-        let at = from + offset;
-        let start = at + 2;
-        let end = start + name.len();
+    loop {
+        let close = find_tag(body, from, name, true)?;
+        match find_tag(body, from, name, false).filter(|open| *open < close) {
+            Some(open) => {
+                depth += 1;
+                from = open + 1;
+            }
+            None if depth == 0 => return Some(close),
+            None => {
+                depth -= 1;
+                from = close + 1;
+            }
+        }
+    }
+}
+
+/// Finds the next start tag `<name` (or end tag `</name` when `closing`) at or after `from`.
+///
+/// The name must end at a tag boundary, so `<abbr` never matches `a`.
+fn find_tag(body: &str, from: usize, name: &str, closing: bool) -> Option<usize> {
+    let bytes = body.as_bytes();
+    let mut at = from;
+    while let Some(offset) = body[at..].find('<') {
+        let lt = at + offset;
+        let name_start = if closing {
+            if bytes.get(lt + 1) != Some(&b'/') {
+                at = lt + 1;
+                continue;
+            }
+            lt + 2
+        } else {
+            lt + 1
+        };
+        let name_end = name_start + name.len();
         let name_matches = bytes
-            .get(start..end)
+            .get(name_start..name_end)
             .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name.as_bytes()));
         let boundary = bytes
-            .get(end)
-            .is_none_or(|byte| *byte == b'>' || byte.is_ascii_whitespace());
+            .get(name_end)
+            .is_none_or(|byte| *byte == b'>' || *byte == b'/' || byte.is_ascii_whitespace());
         if name_matches && boundary {
-            return Some(at);
+            return Some(lt);
         }
-        from = start;
+        at = lt + 1;
     }
     None
 }
@@ -321,6 +357,32 @@ mod tests {
         let link = next_element(html, "a", |tag| tag.has_class("x")).expect("link");
         assert_eq!(link.inner, "<abbr>q</abbr>r");
         assert!(link.after.starts_with("<b>"));
+    }
+
+    #[test]
+    fn nested_elements_of_the_same_name_close_at_their_own_end_tag() {
+        let html = r#"<div class="outer"><div>in</div></div><p>after</p>"#;
+        let outer = next_element(html, "div", |tag| tag.has_class("outer")).expect("outer");
+        assert_eq!(outer.inner, "<div>in</div>");
+        assert!(outer.after.starts_with("<p>"));
+    }
+
+    #[test]
+    fn unclosed_element_ends_where_the_next_element_of_its_name_begins() {
+        let html = r#"<a class="x" href="/1"><span>one</span><a class="x" href="/2">two</a>"#;
+        let first = next_element(html, "a", |tag| tag.has_class("x")).expect("first link");
+        assert_eq!(first.inner, "<span>one</span>");
+        let second = next_element(first.after, "a", |tag| tag.has_class("x")).expect("second link");
+        assert_eq!(second.tag.attr("href").as_deref(), Some("/2"));
+        assert_eq!(text(second.inner), "two");
+    }
+
+    #[test]
+    fn unclosed_last_element_keeps_everything_after_it_inside_it() {
+        let html = r#"<main><a class="x" href="/1"><span>one</span></main>"#;
+        let link = next_element(html, "a", |tag| tag.has_class("x")).expect("link");
+        assert_eq!(link.inner, "<span>one</span></main>");
+        assert_eq!(link.after, "");
     }
 
     #[test]

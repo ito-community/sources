@@ -5,28 +5,34 @@
 //! decrypts `enc` when present, and builds the playable video with its caption tracks.
 //! Intro and outro data are not parsed: Ito's model has no field for them.
 
-use crate::{http, markup};
+use crate::http::{self, Failure, Transport, USER_AGENT, Upstream};
+use crate::markup;
 use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use base64::{
     Engine, alphabet,
     engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig, general_purpose::STANDARD},
 };
 use ito_rs::{
-    Error, Result,
+    Error,
     models::anime::{Subtitle, Video},
 };
 use std::collections::HashMap;
 
 const ORIGIN: &str = "https://megaplay.buzz";
 const ORIGIN_REFERER: &str = "https://megaplay.buzz/";
-const USER_AGENT: &str =
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0";
 
 // getSources returns the stream as `enc`: AES-256-CBC with PKCS#7 padding, keyed by this
 // 16-byte string zero-padded to 32 bytes, base64 (standard or URL-safe alphabet, padding
 // optional). The plaintext is JSON `{"file": ...}`.
 const SOURCE_KEY: &[u8; 16] = b"i?LMTAx0Q6,:}50U";
 const SOURCE_IV: &[u8; 16] = b"W0;27ToaUpl_P%'c";
+
+/// Largest caption file that is inlined. A larger track is dropped, not inlined.
+const CAPTION_LIMIT: usize = 512 * 1024;
+
+/// Caption tracks already resolved during one provider call, keyed by track URL. Sub and dub
+/// share their tracks, so each file is fetched once. `None` marks a track that was not inlined.
+pub type CaptionCache = HashMap<String, Option<String>>;
 
 /// Audio language of a Ryu stream.
 #[derive(Debug, Clone, Copy)]
@@ -62,18 +68,28 @@ pub fn embed_url(episode_id: &str, lang: Lang) -> String {
 
 /// Resolves the playable Ryu stream from an already fetched MegaPlay embed page.
 ///
-/// `embed_url` is the `s-2` embed the hop resolved to. It is the Referer for getSources.
-pub fn extract(embed_url: &str, embed_html: &str, lang: Lang) -> Result<Vec<Video>> {
+/// `embed_url` is the `s-2` embed the hop resolved to, and it is the Referer for getSources.
+/// `quality` is the label the caller shows for this stream. `captions` is shared by every
+/// call of one provider request.
+pub fn extract<N: Transport>(
+    net: &N,
+    embed_url: &str,
+    embed_html: &str,
+    lang: Lang,
+    quality: &str,
+    captions: &mut CaptionCache,
+) -> Result<Vec<Video>, Failure> {
     let player_id = find_player_id(embed_html)
         .ok_or_else(|| Error::Html("MegaPlay player id not found".to_string()))?;
     let sources_url = format!(
         "{ORIGIN}/stream/getSources?id={player_id}&type={}",
         lang.as_str()
     );
-    let response = http::fetch(
+    let response = http::get(
+        net,
+        Upstream::MegaPlay,
         &sources_url,
         &[
-            ("User-Agent", USER_AGENT),
             ("Referer", embed_url),
             ("X-Requested-With", "XMLHttpRequest"),
         ],
@@ -82,7 +98,7 @@ pub fn extract(embed_url: &str, embed_html: &str, lang: Lang) -> Result<Vec<Vide
         .map_err(|_| Error::Html("MegaPlay sources are not JSON".to_string()))?;
     let file =
         file_url(&json).ok_or_else(|| Error::Html("MegaPlay sources have no file".to_string()))?;
-    let subtitles = subtitles(&json)?;
+    let subtitles = subtitles(net, &json, captions)?;
 
     let headers = HashMap::from([
         ("Referer".to_string(), ORIGIN_REFERER.to_string()),
@@ -91,7 +107,7 @@ pub fn extract(embed_url: &str, embed_html: &str, lang: Lang) -> Result<Vec<Vide
     ]);
     Ok(vec![Video {
         url: file,
-        quality: "Auto".to_string(),
+        quality: quality.to_string(),
         headers: Some(headers),
         audio_tracks: None,
         subtitles: Some(subtitles),
@@ -144,9 +160,16 @@ fn decrypt_source(enc: &str) -> Option<String> {
     json.get("file")?.as_str().map(str::to_string)
 }
 
-/// Builds the caption tracks: `captions` only, each inlined as a data URL when it can be
-/// fetched, followed by the "Off" entry that every stream carries.
-fn subtitles(json: &serde_json::Value) -> Result<Vec<Subtitle>> {
+/// Builds the caption tracks: `captions` only, each inlined as a WebVTT data URL when it passes
+/// [`inline_caption`], followed by the "Off" entry that every stream carries.
+///
+/// A track that cannot be inlined is dropped. Its remote URL would need MegaPlay's Origin and
+/// Referer, and `Subtitle` has no field to carry them.
+fn subtitles<N: Transport>(
+    net: &N,
+    json: &serde_json::Value,
+    captions: &mut CaptionCache,
+) -> Result<Vec<Subtitle>, Failure> {
     let mut subtitles = Vec::new();
     let tracks = json
         .get("tracks")
@@ -160,12 +183,15 @@ fn subtitles(json: &serde_json::Value) -> Result<Vec<Subtitle>> {
         let Some(file) = track.get("file").and_then(serde_json::Value::as_str) else {
             continue;
         };
+        let Some(url) = inline_caption(net, file, captions)? else {
+            continue;
+        };
         let language = track
             .get("label")
             .and_then(serde_json::Value::as_str)
             .unwrap_or("Unknown");
         subtitles.push(Subtitle {
-            url: caption_url(file)?,
+            url,
             language: language.to_string(),
             format: "vtt".to_string(),
             is_hardsub: false,
@@ -180,24 +206,49 @@ fn subtitles(json: &serde_json::Value) -> Result<Vec<Subtitle>> {
     Ok(subtitles)
 }
 
-/// Inlines a caption file as a data URL. If the file cannot be read, keeps its remote URL.
-/// A block still fails the call.
-fn caption_url(file: &str) -> Result<String> {
-    match http::fetch(
-        file,
-        &[
-            ("User-Agent", USER_AGENT),
-            ("Origin", ORIGIN),
-            ("Referer", ORIGIN_REFERER),
-        ],
-    ) {
-        Ok(response) => Ok(vtt_data_url(&response.body)),
-        Err(error) if http::is_blocked(&error) => Err(error),
-        Err(_) => {
-            ito_rs::host::print("MegaPlay: caption track kept as a remote URL");
-            Ok(file.to_string())
-        }
+/// Returns the data URL for one caption file, fetching it at most once per provider call.
+///
+/// `None` means the track is not inlined: its file failed, is not WebVTT, or is over
+/// [`CAPTION_LIMIT`]. A block still fails the call.
+fn inline_caption<N: Transport>(
+    net: &N,
+    file: &str,
+    captions: &mut CaptionCache,
+) -> Result<Option<String>, Failure> {
+    if let Some(known) = captions.get(file) {
+        return Ok(known.clone());
     }
+    let inlined = match http::get(
+        net,
+        Upstream::MegaPlay,
+        file,
+        &[("Origin", ORIGIN), ("Referer", ORIGIN_REFERER)],
+    ) {
+        Ok(response) => caption_data_url(&response.body),
+        Err(blocked @ Failure::Blocked { .. }) => return Err(blocked),
+        Err(Failure::Other(_)) => None,
+    };
+    if inlined.is_none() {
+        http::note("MegaPlay: caption track skipped");
+    }
+    captions.insert(file.to_string(), inlined.clone());
+    Ok(inlined)
+}
+
+/// Returns the WebVTT data URL for a caption body, or `None` when the body is not WebVTT or
+/// is over [`CAPTION_LIMIT`].
+fn caption_data_url(body: &[u8]) -> Option<String> {
+    (body.len() <= CAPTION_LIMIT && is_webvtt(body)).then(|| vtt_data_url(body))
+}
+
+/// Returns true when the body starts with the WebVTT signature, after an optional UTF-8
+/// byte-order mark. The signature must end at a space, tab, line break, or the end of the body.
+fn is_webvtt(body: &[u8]) -> bool {
+    let body = body.strip_prefix(b"\xEF\xBB\xBF").unwrap_or(body);
+    body.strip_prefix(b"WEBVTT").is_some_and(|rest| {
+        rest.first()
+            .is_none_or(|byte| matches!(byte, b' ' | b'\t' | b'\r' | b'\n'))
+    })
 }
 
 fn vtt_data_url(body: &[u8]) -> String {
@@ -210,8 +261,20 @@ fn vtt_data_url(body: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fake::Canned;
     use aes::cipher::{BlockModeEncrypt, KeyIvInit};
     use serde_json::json;
+
+    const EMBED_URL: &str = "https://megaplay.buzz/stream/s-2/2142/sub";
+    const DUB_EMBED_URL: &str = "https://megaplay.buzz/stream/s-2/2142/dub";
+    const EMBED_HTML: &str = r#"<html><div id="megaplay-player" data-id="2222"></div></html>"#;
+    const SOURCES_SUB: &str = "https://megaplay.buzz/stream/getSources?id=2222&type=sub";
+    const SOURCES_DUB: &str = "https://megaplay.buzz/stream/getSources?id=2222&type=dub";
+
+    fn sources(tracks: serde_json::Value) -> String {
+        json!({ "sources": { "file": "https://cdn.example/master.m3u8" }, "tracks": tracks })
+            .to_string()
+    }
 
     #[test]
     fn player_id_is_read_from_the_megaplay_player_element() {
@@ -280,5 +343,169 @@ mod tests {
             file_url(&json).as_deref(),
             Some("https://cdn.example/master.m3u8")
         );
+    }
+
+    #[test]
+    fn extract_uses_the_caller_quality_label_and_the_shared_playback_headers() {
+        let net = Canned::new().on(SOURCES_SUB, 200, sources(json!([])));
+        let videos = extract(
+            &net,
+            EMBED_URL,
+            EMBED_HTML,
+            Lang::Sub,
+            "Auto SUB Ryu",
+            &mut CaptionCache::new(),
+        )
+        .expect("sub stream");
+        assert_eq!(videos.len(), 1);
+        assert_eq!(videos[0].quality, "Auto SUB Ryu");
+        let headers = videos[0].headers.as_ref().expect("playback headers");
+        assert_eq!(
+            headers.get("User-Agent").map(String::as_str),
+            Some(USER_AGENT)
+        );
+        assert_eq!(
+            headers.get("Origin").map(String::as_str),
+            Some("https://megaplay.buzz")
+        );
+    }
+
+    #[test]
+    fn captions_are_fetched_once_and_only_valid_webvtt_within_the_cap_is_inlined() {
+        let oversized = format!("WEBVTT\n{}", "x".repeat(CAPTION_LIMIT));
+        let tracks = json!([
+            { "kind": "captions", "file": "https://megaplay.buzz/cc/en.vtt", "label": "English" },
+            { "kind": "captions", "file": "https://megaplay.buzz/cc/html.vtt", "label": "Html" },
+            { "kind": "captions", "file": "https://megaplay.buzz/cc/big.vtt", "label": "Big" },
+            { "kind": "captions", "file": "https://megaplay.buzz/cc/gone.vtt", "label": "Gone" },
+            { "kind": "thumbnails", "file": "https://megaplay.buzz/cc/thumbs.vtt", "label": "Thumbs" }
+        ]);
+        let net = Canned::new()
+            .on(SOURCES_SUB, 200, sources(tracks.clone()))
+            .on(SOURCES_DUB, 200, sources(tracks))
+            .on(
+                "https://megaplay.buzz/cc/en.vtt",
+                200,
+                "WEBVTT\n\n00:00.000 --> 00:01.000\nHi\n",
+            )
+            .on(
+                "https://megaplay.buzz/cc/html.vtt",
+                200,
+                "<html>not captions</html>",
+            )
+            .on("https://megaplay.buzz/cc/big.vtt", 200, oversized);
+        let mut captions = CaptionCache::new();
+        let sub = extract(
+            &net,
+            EMBED_URL,
+            EMBED_HTML,
+            Lang::Sub,
+            "Auto SUB Ryu",
+            &mut captions,
+        )
+        .expect("sub stream");
+        let dub = extract(
+            &net,
+            DUB_EMBED_URL,
+            EMBED_HTML,
+            Lang::Dub,
+            "Auto DUB Ryu",
+            &mut captions,
+        )
+        .expect("dub stream");
+
+        for video in sub.iter().chain(&dub) {
+            let subs = video.subtitles.as_deref().expect("subtitles");
+            let languages: Vec<&str> = subs.iter().map(|track| track.language.as_str()).collect();
+            assert_eq!(languages, ["English", "Off"]);
+            assert!(
+                subs.iter()
+                    .all(|track| track.url.starts_with("data:text/vtt"))
+            );
+        }
+        for url in [
+            "https://megaplay.buzz/cc/en.vtt",
+            "https://megaplay.buzz/cc/html.vtt",
+            "https://megaplay.buzz/cc/big.vtt",
+            "https://megaplay.buzz/cc/gone.vtt",
+        ] {
+            assert_eq!(net.sent_to(url), 1, "{url} fetched more than once");
+        }
+        assert_eq!(net.sent_to("https://megaplay.buzz/cc/thumbs.vtt"), 0);
+    }
+
+    #[test]
+    fn caption_requests_carry_the_megaplay_origin_referer_and_user_agent() {
+        let net = Canned::new()
+            .on(
+                SOURCES_SUB,
+                200,
+                sources(json!([{ "kind": "captions", "file": "https://megaplay.buzz/cc/en.vtt", "label": "English" }])),
+            )
+            .on("https://megaplay.buzz/cc/en.vtt", 200, "WEBVTT\n");
+        extract(
+            &net,
+            EMBED_URL,
+            EMBED_HTML,
+            Lang::Sub,
+            "Auto SUB Ryu",
+            &mut CaptionCache::new(),
+        )
+        .expect("sub stream");
+        let request = net
+            .requests()
+            .into_iter()
+            .find(|sent| sent.url == "https://megaplay.buzz/cc/en.vtt")
+            .expect("caption request");
+        assert_eq!(request.header("Origin"), Some("https://megaplay.buzz"));
+        assert_eq!(request.header("Referer"), Some("https://megaplay.buzz/"));
+        assert_eq!(request.header("User-Agent"), Some(USER_AGENT));
+    }
+
+    #[test]
+    fn a_blocked_caption_fails_the_call() {
+        let net = Canned::new()
+            .on(
+                SOURCES_SUB,
+                200,
+                sources(json!([{ "kind": "captions", "file": "https://megaplay.buzz/cc/en.vtt", "label": "English" }])),
+            )
+            .on("https://megaplay.buzz/cc/en.vtt", 403, "");
+        let Err(failure) = extract(
+            &net,
+            EMBED_URL,
+            EMBED_HTML,
+            Lang::Sub,
+            "Auto SUB Ryu",
+            &mut CaptionCache::new(),
+        ) else {
+            panic!("expected a block");
+        };
+        assert!(matches!(
+            failure,
+            Failure::Blocked {
+                upstream: Upstream::MegaPlay,
+                status: 403
+            }
+        ));
+    }
+
+    #[test]
+    fn a_caption_is_inlined_up_to_the_cap_and_no_further() {
+        let mut at_cap = b"WEBVTT\n".to_vec();
+        at_cap.resize(CAPTION_LIMIT, b'x');
+        assert!(caption_data_url(&at_cap).is_some());
+        at_cap.push(b'x');
+        assert!(caption_data_url(&at_cap).is_none());
+    }
+
+    #[test]
+    fn only_a_webvtt_signature_passes_validation() {
+        assert!(is_webvtt(b"WEBVTT\n\n"));
+        assert!(is_webvtt(b"WEBVTT"));
+        assert!(is_webvtt(b"\xEF\xBB\xBFWEBVTT\r\n"));
+        assert!(!is_webvtt(b"WEBVTTX"));
+        assert!(!is_webvtt(b"<html>WEBVTT</html>"));
+        assert!(!is_webvtt(b""));
     }
 }

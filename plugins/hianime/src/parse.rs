@@ -20,7 +20,8 @@ pub struct Details {
     pub title: Option<String>,
     pub cover: Option<String>,
     pub description: Option<String>,
-    pub status: Status,
+    /// `None` unless the page shows a status this plugin recognizes.
+    pub status: Option<Status>,
     /// The show type (for example `TV`) followed by its genres.
     pub tags: Vec<String>,
     pub studios: Vec<String>,
@@ -46,7 +47,7 @@ pub fn anime(key: String, title: String, cover: Option<String>) -> Anime {
 }
 
 /// Parses the catalog cards (`article.hk-tile`) of a listing or search page, in page order.
-/// Cards without a detail link are skipped.
+/// Cards without a link to a HiAnime details page are skipped.
 pub fn cards(html: &str) -> Vec<Anime> {
     let mut anime = Vec::new();
     let mut cursor = html;
@@ -60,7 +61,7 @@ pub fn cards(html: &str) -> Vec<Anime> {
 fn card_anime(card: &str) -> Option<Anime> {
     let name = markup::next_element(card, "h3", |tag| tag.has_class("hk-tile__name"))?;
     let link = markup::next_element(name.inner, "a", |_| true)?;
-    let key = path_of(&link.tag.attr("href")?);
+    let key = site_path(&link.tag.attr("href")?)?;
     if !is_details_path(&key) {
         return None;
     }
@@ -100,6 +101,22 @@ pub fn has_next_page(html: &str) -> bool {
     })
 }
 
+/// Returns the N of an "N found" result heading, or `None` when the page shows no such count.
+pub fn result_count(html: &str) -> Option<u32> {
+    let text = markup::text(html);
+    let words: Vec<&str> = text.split_whitespace().collect();
+    words.windows(2).find_map(|pair| match pair {
+        [count, "found"] => count.replace(',', "").parse().ok(),
+        _ => None,
+    })
+}
+
+/// Returns true when the page carries the empty-search state: an element whose class list
+/// includes `hk-empty`.
+pub fn has_empty_state(html: &str) -> bool {
+    markup::tags(html).any(|tag| tag.has_class("hk-empty"))
+}
+
 /// Parses the details page: title, poster, synopsis, status, show type, genres, and studios.
 pub fn details(html: &str) -> Details {
     let facts = facts(html);
@@ -120,9 +137,7 @@ pub fn details(html: &str) -> Details {
         .map(|src| absolute_url(&src));
     let description = markup::next_element(html, "*", |tag| tag.has_class("hk-clamp"))
         .and_then(|clamp| non_empty(markup::text(clamp.inner)));
-    let status = fact(&facts, "Status")
-        .map(|value| status_from_text(&markup::text(value)))
-        .unwrap_or(Status::Unknown);
+    let status = fact(&facts, "Status").and_then(|value| status_from_text(&markup::text(value)));
     let studios = fact(&facts, "Studio")
         .map(|value| link_texts(value, None))
         .unwrap_or_default();
@@ -146,11 +161,14 @@ pub fn details(html: &str) -> Details {
 }
 
 /// Parses the episode rows (`section#hk-episodes a.hk-ep`) in page order.
-pub fn episodes(html: &str) -> Vec<Episode> {
+///
+/// A page without the episode section is a movie page and yields its single watch link as the
+/// episode (see `movie_episode`). An empty section is an empty list.
+pub fn episodes(html: &str) -> Result<Vec<Episode>> {
     let Some(section) = markup::next_element(html, "section", |tag| {
         tag.attr("id").as_deref() == Some("hk-episodes")
     }) else {
-        return Vec::new();
+        return movie_episode(html);
     };
 
     let mut episodes = Vec::new();
@@ -160,7 +178,9 @@ pub fn episodes(html: &str) -> Vec<Episode> {
         let Some(href) = link.tag.attr("href") else {
             continue;
         };
-        let key = path_of(&href);
+        let Some(key) = site_path(&href) else {
+            continue;
+        };
         if !is_watch_path(&key) {
             continue;
         }
@@ -177,7 +197,36 @@ pub fn episodes(html: &str) -> Vec<Episode> {
             paywalled: None,
         });
     }
-    episodes
+    Ok(episodes)
+}
+
+/// Builds the one episode of a movie details page. A movie has no episode list, so its page
+/// links its single watch page. Zero or several distinct movie watch links are an error.
+fn movie_episode(html: &str) -> Result<Vec<Episode>> {
+    let mut keys: Vec<String> = Vec::new();
+    for tag in markup::tags(html).filter(|tag| tag.name.eq_ignore_ascii_case("a")) {
+        let Some(key) = tag.attr("href").and_then(|href| site_path(&href)) else {
+            continue;
+        };
+        if is_movie_watch_path(&key) && !keys.contains(&key) {
+            keys.push(key);
+        }
+    }
+    if keys.len() != 1 {
+        return Err(Error::Html(
+            "HiAnime details page has no episode list".to_string(),
+        ));
+    }
+    let key = keys.swap_remove(0);
+    Ok(vec![Episode {
+        url: Some(absolute_url(&key)),
+        key,
+        title: None,
+        episode: Some(1.0),
+        date_updated: None,
+        lang: None,
+        paywalled: None,
+    }])
 }
 
 /// Reads the episode's stream token from the watch page's `article.hk-watch`.
@@ -221,15 +270,16 @@ pub fn episode_id_from_token(token: &str) -> Option<String> {
     (!id.is_empty() && id.bytes().all(|byte| byte.is_ascii_digit())).then(|| id.to_string())
 }
 
-/// Maps the details "Status" text to an Ito status. Unknown text maps to `Unknown`.
-pub fn status_from_text(text: &str) -> Status {
+/// Maps the details "Status" text to an Ito status. Text this plugin does not recognize gives
+/// `None`, so the caller keeps the stored status.
+pub fn status_from_text(text: &str) -> Option<Status> {
     let lower = text.to_ascii_lowercase();
     if lower.contains("airing") {
-        Status::Ongoing
+        Some(Status::Ongoing)
     } else if lower.contains("finished") || lower.contains("completed") {
-        Status::Completed
+        Some(Status::Completed)
     } else {
-        Status::Unknown
+        None
     }
 }
 
@@ -242,7 +292,7 @@ pub fn anime_key_from_url(url: &str) -> Option<String> {
         .strip_prefix("https://")
         .or_else(|| url.strip_prefix("http://"))?;
     let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
-    if !host.eq_ignore_ascii_case("hianime.ms") && !host.eq_ignore_ascii_case("www.hianime.ms") {
+    if !is_site_host(host) {
         return None;
     }
     let path = path.split(['?', '#']).next().unwrap_or_default();
@@ -268,8 +318,17 @@ pub fn is_watch_path(key: &str) -> bool {
     key.strip_prefix("/watch-").is_some_and(is_slug)
 }
 
-/// Turns an absolute or site-relative link into an absolute HiAnime URL.
+/// Returns true for a movie watch key such as `/watch-your-name-7k2m9`: a watch key with no
+/// `-episode-<n>` part.
+pub fn is_movie_watch_path(key: &str) -> bool {
+    is_watch_path(key) && !key.contains("-episode-")
+}
+
+/// Turns an absolute, protocol-relative, or site-relative link into an absolute URL.
 pub fn absolute_url(href: &str) -> String {
+    if let Some(rest) = href.strip_prefix("//") {
+        return format!("https://{rest}");
+    }
     if href.starts_with("https://") || href.starts_with("http://") {
         return href.to_string();
     }
@@ -277,13 +336,42 @@ pub fn absolute_url(href: &str) -> String {
 }
 
 /// Returns the site path of a link: no scheme, host, query, or fragment, with a leading `/`.
-pub fn path_of(href: &str) -> String {
-    let without_host = match href.split_once("://") {
-        Some((_, rest)) => rest.find('/').map_or("/", |at| &rest[at..]),
-        None => href,
+///
+/// Relative links are site links. Absolute and protocol-relative links count only when they
+/// point at HiAnime. A link to any other host gives `None`.
+pub fn site_path(href: &str) -> Option<String> {
+    let (host, path) = if let Some(rest) = href.strip_prefix("//") {
+        split_host(rest)
+    } else if let Some((scheme, rest)) = href
+        .split_once("://")
+        .filter(|(scheme, _)| !scheme.contains(['/', '?', '#']))
+    {
+        if !(scheme.eq_ignore_ascii_case("https") || scheme.eq_ignore_ascii_case("http")) {
+            return None;
+        }
+        split_host(rest)
+    } else {
+        ("", href)
     };
-    let path = without_host.split(['?', '#']).next().unwrap_or_default();
-    format!("/{}", path.trim_start_matches('/'))
+    if !host.is_empty() && !is_site_host(host) {
+        return None;
+    }
+    let path = path.split(['?', '#']).next().unwrap_or_default();
+    Some(format!("/{}", path.trim_start_matches('/')))
+}
+
+/// Splits `host` from the path, query, or fragment that follows it. The scheme and `//` must
+/// already be removed.
+fn split_host(rest: &str) -> (&str, &str) {
+    match rest.find(['/', '?', '#']) {
+        Some(at) => (&rest[..at], &rest[at..]),
+        None => (rest, ""),
+    }
+}
+
+/// Returns true for the HiAnime site host, with or without `www.`.
+fn is_site_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("hianime.ms") || host.eq_ignore_ascii_case("www.hianime.ms")
 }
 
 /// Returns the `(label, definition markup)` pairs of every `dl.hk-facts` list.
@@ -388,6 +476,14 @@ mod tests {
     }
 
     #[test]
+    fn card_links_accept_protocol_relative_hianime_hrefs_and_drop_other_hosts() {
+        let html = r#"<article class="hk-tile"><h3 class="hk-tile__name"><a href="//www.hianime.ms/details/relative-one-abcde" title="Relative One (TV, 2020)">x</a></h3></article><article class="hk-tile"><h3 class="hk-tile__name"><a href="https://example.com/details/elsewhere-abcde" title="Elsewhere (TV, 2020)">x</a></h3></article>"#;
+        let parsed = cards(html);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].key, "/details/relative-one-abcde");
+    }
+
+    #[test]
     fn next_page_follows_rel_next_and_an_enabled_next_link_only() {
         let rel_next =
             r#"<head><link rel="prev" href="/x?page=1"><link rel="next" href="/x?page=3"></head>"#;
@@ -399,6 +495,17 @@ mod tests {
         assert!(!has_next_page(disabled));
         assert!(has_next_page(enabled));
         assert!(!has_next_page(prev_only));
+    }
+
+    #[test]
+    fn result_count_reads_the_n_found_heading() {
+        assert_eq!(
+            result_count("<h1>Search</h1><p><span>58</span> found</p>"),
+            Some(58)
+        );
+        assert_eq!(result_count("<p>1,204 found</p>"), Some(1204));
+        assert_eq!(result_count("<p>0 found</p>"), Some(0));
+        assert_eq!(result_count("<p>no anime found</p>"), None);
     }
 
     const DETAILS: &str = r#"
@@ -423,18 +530,37 @@ mod tests {
             Some("https://hianime.ms/images/poster/sample-show.webp")
         );
         assert_eq!(parsed.description.as_deref(), Some("A & B story."));
-        assert!(matches!(parsed.status, Status::Ongoing));
+        assert!(matches!(parsed.status, Some(Status::Ongoing)));
         assert_eq!(parsed.tags, vec!["TV", "Action", "Drama"]);
         assert_eq!(parsed.studios, vec!["Sample Studio"]);
     }
 
     #[test]
-    fn status_maps_airing_finished_and_other_text() {
-        assert!(matches!(status_from_text("Airing now"), Status::Ongoing));
-        assert!(matches!(status_from_text("Finished"), Status::Completed));
-        assert!(matches!(status_from_text("Completed"), Status::Completed));
-        assert!(matches!(status_from_text("Not yet aired"), Status::Unknown));
-        assert!(matches!(status_from_text(""), Status::Unknown));
+    fn a_details_page_without_fields_reports_nothing_so_callers_keep_existing_data() {
+        let parsed = details("<main><h1>Nothing here</h1></main>");
+        assert!(parsed.title.is_none());
+        assert!(parsed.description.is_none());
+        assert!(parsed.status.is_none());
+        assert!(parsed.tags.is_empty());
+        assert!(parsed.studios.is_empty());
+    }
+
+    #[test]
+    fn status_maps_airing_and_finished_text_and_leaves_other_text_unmapped() {
+        assert!(matches!(
+            status_from_text("Airing now"),
+            Some(Status::Ongoing)
+        ));
+        assert!(matches!(
+            status_from_text("Finished"),
+            Some(Status::Completed)
+        ));
+        assert!(matches!(
+            status_from_text("Completed"),
+            Some(Status::Completed)
+        ));
+        assert!(status_from_text("Not yet aired").is_none());
+        assert!(status_from_text("").is_none());
     }
 
     const EPISODES: &str = r#"
@@ -448,7 +574,7 @@ mod tests {
 
     #[test]
     fn episodes_read_watch_key_number_and_title_from_the_episode_section_only() {
-        let parsed = episodes(EPISODES);
+        let parsed = episodes(EPISODES).expect("episode section");
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].key, "/watch-sample-show-episode-1-abcde");
         assert_eq!(parsed[0].episode, Some(1.0));
@@ -459,6 +585,13 @@ mod tests {
         );
         assert_eq!(parsed[1].episode, Some(2.0));
         assert_eq!(parsed[1].title.as_deref(), Some("Second"));
+    }
+
+    #[test]
+    fn episodes_without_the_episode_section_are_an_error_not_an_empty_list() {
+        let html =
+            r#"<main><a class="hk-ep" href="/watch-x-episode-1-abcde" data-ep="1"></a></main>"#;
+        assert!(matches!(episodes(html), Err(Error::Html(_))));
     }
 
     #[test]
@@ -510,15 +643,55 @@ mod tests {
     }
 
     #[test]
-    fn path_of_strips_scheme_host_query_and_fragment() {
+    fn site_paths_keep_only_hianime_links_and_strip_query_and_fragment() {
         assert_eq!(
-            path_of("https://hianime.ms/details/a-b?ref=1#x"),
-            "/details/a-b"
+            site_path("https://hianime.ms/details/a-b?ref=1#x").as_deref(),
+            Some("/details/a-b")
         );
-        assert_eq!(path_of("/watch-a-episode-1-b"), "/watch-a-episode-1-b");
+        assert_eq!(
+            site_path("//www.hianime.ms/details/a-b").as_deref(),
+            Some("/details/a-b")
+        );
+        assert_eq!(
+            site_path("/watch-a-episode-1-b").as_deref(),
+            Some("/watch-a-episode-1-b")
+        );
+        assert_eq!(site_path("https://example.com/details/a-b"), None);
+        assert_eq!(site_path("//example.com/details/a-b"), None);
+        assert_eq!(site_path("https://hianime.ms.example/details/a-b"), None);
+        assert_eq!(site_path("ftp://hianime.ms/details/a-b"), None);
+    }
+
+    #[test]
+    fn absolute_urls_resolve_protocol_relative_and_site_relative_links() {
         assert_eq!(
             absolute_url("/images/poster/a.webp"),
             "https://hianime.ms/images/poster/a.webp"
         );
+        assert_eq!(
+            absolute_url("//hianime.ms/images/poster/a.webp"),
+            "https://hianime.ms/images/poster/a.webp"
+        );
+    }
+
+    const MOVIE: &str = r#"<section class="hk-title"><h1 class="hk-title__h" data-en="Your Name">Your Name</h1><a class="hk-btn" href="https://hianime.ms/watch-your-name-7k2m9">Watch</a></section>"#;
+
+    #[test]
+    fn a_movie_details_page_yields_one_episode_from_its_watch_link() {
+        let parsed = episodes(MOVIE).expect("movie episode");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].key, "/watch-your-name-7k2m9");
+        assert_eq!(parsed[0].episode, Some(1.0));
+        assert!(parsed[0].title.is_none());
+        assert_eq!(
+            parsed[0].url.as_deref(),
+            Some("https://hianime.ms/watch-your-name-7k2m9")
+        );
+    }
+
+    #[test]
+    fn a_details_page_with_several_bare_watch_links_and_no_episode_section_is_an_error() {
+        let html = r#"<main><a href="/watch-your-name-7k2m9">Watch</a><a href="https://hianime.ms/watch-other-show-q3w4e">Other</a><a href="/watch-your-name-7k2m9?ref=2">Again</a></main>"#;
+        assert!(matches!(episodes(html), Err(Error::Html(_))));
     }
 }
