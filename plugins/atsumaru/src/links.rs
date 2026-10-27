@@ -41,7 +41,7 @@ pub fn image_url(path: &str) -> Option<String> {
     if let Some(rest) = strip_scheme(path) {
         let host = rest[..rest.find(['/', '?', '#']).unwrap_or(rest.len())].to_ascii_lowercase();
         let on_site = !host.contains('@') && (host == "atsu.moe" || host.ends_with(".atsu.moe"));
-        return on_site.then(|| path.to_owned());
+        return on_site.then(|| format!("https://{rest}"));
     }
     if path.is_empty()
         || path.contains("://")
@@ -115,6 +115,10 @@ mod tests {
         assert_eq!(
             image_url("https://cdn.atsu.moe/a.webp").as_deref(),
             Some("https://cdn.atsu.moe/a.webp")
+        );
+        assert_eq!(
+            image_url("http://CDN.atsu.moe/a.webp").as_deref(),
+            Some("https://CDN.atsu.moe/a.webp")
         );
         for path in [
             "https://example.com/a.webp",

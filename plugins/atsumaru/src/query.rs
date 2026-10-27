@@ -53,7 +53,7 @@ pub fn resolve<'a>(entries: &'a [String], terms: &[Term]) -> Result<Vec<String>,
     for entry in entries {
         let term = terms
             .iter()
-            .find(|term| term.id == *entry || term.name.eq_ignore_ascii_case(entry))
+            .find(|term| term.id == *entry || crate::settings::same_name(&term.name, entry))
             .ok_or(entry.as_str())?;
         if !ids.contains(&term.id) {
             ids.push(term.id.clone());
@@ -73,7 +73,7 @@ pub fn catalog_filters(
     if content.adult_only {
         filters.push("isAdult:=true".into());
     } else if content.max_rating < Rating::Pornographic {
-        filters.push("isAdult:=false".into());
+        filters.push("isAdult:!=true".into());
         filters.push(none_of(
             "mbContentRating",
             Rating::ALL
@@ -337,7 +337,7 @@ mod tests {
             [
                 "hidden:!=true",
                 "medium:=[`Comic`]",
-                "isAdult:=false",
+                "isAdult:!=true",
                 "mbContentRating:!=[`Suggestive`,`Erotica`,`Pornographic`]",
             ]
         );

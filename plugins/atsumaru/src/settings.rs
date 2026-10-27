@@ -769,13 +769,17 @@ impl<F: Fn(&str) -> Option<String>> Parser<F> {
 
     fn types(&mut self) -> Vec<&'static str> {
         let mut types = Vec::new();
+        let mut unknown = false;
         for name in self.list(TYPES) {
             let lower = name.to_lowercase();
             match TYPE_NAMES.iter().find(|(label, _)| *label == lower) {
                 Some((_, value)) if !types.contains(value) => types.push(*value),
                 Some(_) => {}
-                None => self.issue(TYPES, "Use Manga, Manhwa, Manhua, OEL or Other."),
+                None => unknown = true,
             }
+        }
+        if unknown {
+            self.issue(TYPES, "Use Manga, Manhwa, Manhua, OEL or Other.");
         }
         types
     }
@@ -788,6 +792,13 @@ pub fn split_list(raw: &str) -> Vec<String> {
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .collect()
+}
+
+/// Whether two user or site names are the same, ignoring case.
+pub fn same_name(a: &str, b: &str) -> bool {
+    a.chars()
+        .flat_map(char::to_lowercase)
+        .eq(b.chars().flat_map(char::to_lowercase))
 }
 
 fn dedupe_case_insensitive(values: &mut Vec<String>) {
@@ -803,8 +814,7 @@ fn dedupe_case_insensitive(values: &mut Vec<String>) {
 }
 
 fn overlaps(left: &[String], right: &[String]) -> bool {
-    left.iter()
-        .any(|a| right.iter().any(|b| a.eq_ignore_ascii_case(b)))
+    left.iter().any(|a| right.iter().any(|b| same_name(a, b)))
 }
 
 fn issue(key: &str, message: &str) -> SettingIssue {

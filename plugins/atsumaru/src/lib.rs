@@ -23,7 +23,7 @@ mod settings;
 
 use models::*;
 use query::{Medium, PAGE_SIZE, SearchIds};
-use settings::{Preferences, Rating, Section, SectionSource, Sort};
+use settings::{ContentPreferences, Preferences, Rating, Section, SectionSource, Sort};
 
 const API: &str = "https://atsu.moe/api";
 const CHECK_FILTERS: &str = "check_filter_names";
@@ -44,7 +44,7 @@ fn decode<T: DeserializeOwned>(status: i32, body: &[u8]) -> Result<T> {
             Error::Host("Atsumaru sent a response the plugin does not understand".into())
         }),
         404 => Err(Error::NotFound(
-            "Atsumaru has no such title or chapter".into(),
+            "Atsumaru couldn't find what was requested".into(),
         )),
         _ => Err(Error::Server(format!(
             "Atsumaru answered with HTTP {status}"
@@ -141,12 +141,12 @@ fn novel_rating(rating: ContentRating) -> novel::ContentRating {
     }
 }
 
-/// Default reading direction from the title's origin.
+/// Default reading mode from the title's origin. Japanese manga reads right to left; everything
+/// else keeps the vertical scroll this source has always used.
 fn viewer(origin: Option<&str>) -> Viewer {
     match origin {
         Some("Manga") => Viewer::Rtl,
-        Some("Manwha" | "Manhua") => Viewer::Webtoon,
-        _ => Viewer::Default,
+        _ => Viewer::Webtoon,
     }
 }
 
@@ -178,7 +178,7 @@ impl Listed {
             ceiling,
         );
         Listed {
-            title: title_or(document.title, document.english_title),
+            title: display_title(document.title, document.english_title, &document.id),
             cover: document.poster.as_deref().and_then(links::image_url),
             id: document.id,
             medium: document.medium,
@@ -227,12 +227,13 @@ impl Listed {
     }
 }
 
-fn title_or(title: String, english: Option<String>) -> String {
-    if title.trim().is_empty() {
-        english.unwrap_or_default()
-    } else {
-        title
-    }
+/// The site's title, then its English title, then the id, so an entry is never untitled.
+fn display_title(title: String, english: Option<String>, id: &str) -> String {
+    [Some(title), english]
+        .into_iter()
+        .flatten()
+        .find(|title| !title.trim().is_empty())
+        .unwrap_or_else(|| id.to_owned())
 }
 
 fn search_page(url: &str, page: i32, ceiling: Rating) -> Result<MediaPageResult> {
@@ -268,12 +269,12 @@ fn blocked_tag_ids(preferences: &Preferences) -> Result<Vec<String>> {
 fn search_catalog(query: &str, page: i32, kind: Option<MediaKind>) -> Result<MediaPageResult> {
     let preferences = preferences()?;
     let ceiling = preferences.content.max_rating;
-    if let Some(id) = links::series_id(query) {
-        return pasted_link(&id, kind, ceiling);
-    }
     let mediums = query::mediums(&preferences.content, kind);
     if mediums.is_empty() {
         return Ok(empty_page());
+    }
+    if let Some(id) = links::series_id(query) {
+        return pasted_link(&id, &mediums, ceiling);
     }
     let search = &preferences.search;
     let search_ids = SearchIds {
@@ -294,13 +295,21 @@ fn search_catalog(query: &str, page: i32, kind: Option<MediaKind>) -> Result<Med
     )
 }
 
-/// A pasted site link finds its series directly, regardless of the search filters.
-fn pasted_link(id: &str, kind: Option<MediaKind>, ceiling: Rating) -> Result<MediaPageResult> {
+/// A pasted site link finds its series directly, ignoring search filters but not the media
+/// shown.
+fn pasted_link(id: &str, mediums: &[Medium], ceiling: Rating) -> Result<MediaPageResult> {
+    let shown = |document: &SearchDocument| {
+        let medium = if is_novel(document.medium.as_deref()) {
+            Medium::Novel
+        } else {
+            Medium::Comic
+        };
+        document.id == id && mediums.contains(&medium)
+    };
     let entries = lookup(&[id])?
         .into_iter()
-        .filter(|document| document.id == id)
+        .filter(shown)
         .map(|document| Listed::from_document(document, ceiling).into_entry())
-        .filter(|entry| kind.is_none_or(|kind| entry.kind() == kind))
         .collect();
     Ok(MediaPageResult {
         entries,
@@ -334,7 +343,7 @@ fn spotlight(preferences: &Preferences) -> Result<Option<Term>> {
     taxonomy
         .genres
         .iter()
-        .find(|genre| genre.id == name || genre.name.eq_ignore_ascii_case(name))
+        .find(|genre| genre.id == name || settings::same_name(&genre.name, name))
         .map(|genre| {
             Some(Term {
                 id: genre.id.clone(),
@@ -369,7 +378,7 @@ fn section_page(
             let feed: FeedResponse = get_json(&url)?;
             Ok(MediaPageResult {
                 has_next_page: feed.items.len() == PAGE_SIZE,
-                entries: rate_feed(feed.items, content.max_rating)?,
+                entries: rate_feed(feed.items, content)?,
             })
         }
         SectionSource::Trending => {
@@ -395,21 +404,23 @@ fn section_page(
     }
 }
 
-/// Feeds carry no content rating, so it comes from the catalog in one lookup per page.
-fn rate_feed(items: Vec<FeedItem>, ceiling: Rating) -> Result<Vec<MediaEntry>> {
+/// Feeds carry no content rating, so it comes from the catalog in one lookup per page. The
+/// site already filters feeds by rating; entries outside the settings are dropped regardless.
+fn rate_feed(items: Vec<FeedItem>, content: &ContentPreferences) -> Result<Vec<MediaEntry>> {
     let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
     let documents = lookup(&ids)?;
     Ok(items
         .into_iter()
-        .map(|item| {
+        .filter_map(|item| {
             let rated = documents.iter().find(|document| document.id == item.id);
-            let rating = content_rating(
-                rated.and_then(|document| document.mb_content_rating.as_deref()),
-                item.is_adult.unwrap_or(false)
-                    || rated.and_then(|document| document.is_adult) == Some(true),
-                ceiling,
-            );
-            Listed {
+            let site_rating = rated.and_then(|document| document.mb_content_rating.as_deref());
+            let adult = item.is_adult.unwrap_or(false)
+                || rated.and_then(|document| document.is_adult) == Some(true);
+            if !feed_allows(site_rating.and_then(Rating::parse), adult, content) {
+                return None;
+            }
+            let rating = content_rating(site_rating, adult, content.max_rating);
+            let listed = Listed {
                 cover: item.image.as_deref().and_then(links::image_url),
                 status: rated.and_then(|document| document.status.clone()),
                 authors: rated
@@ -420,10 +431,21 @@ fn rate_feed(items: Vec<FeedItem>, ceiling: Rating) -> Result<Vec<MediaEntry>> {
                 medium: item.medium,
                 origin: item.origin,
                 rating,
-            }
-            .into_entry()
+            };
+            Some(listed.into_entry())
         })
         .collect())
+}
+
+/// Whether a feed entry fits the content settings, as the search filters require.
+fn feed_allows(rating: Option<Rating>, adult: bool, content: &ContentPreferences) -> bool {
+    if content.adult_only {
+        return adult;
+    }
+    if adult && content.max_rating < Rating::Pornographic {
+        return false;
+    }
+    rating.is_none_or(|rating| rating <= content.max_rating)
 }
 
 fn home() -> Result<HomeLayout> {
@@ -444,7 +466,9 @@ fn home() -> Result<HomeLayout> {
             },
             _ => section.title.to_owned(),
         };
-        let entries = section_page(section, &preferences, 1)?.entries;
+        let entries = section_page(section, &preferences, 1)
+            .map_err(|error| in_section(error, &title))?
+            .entries;
         let listing = Some(Listing {
             id: section.id.into(),
             name: title.clone(),
@@ -489,7 +513,7 @@ fn listing(listing: &Listing, page: i32) -> Result<MediaPageResult> {
 }
 
 /// Refreshes an entry, keeping its kind: entries saved before novels were supported stay
-/// manga, and their chapters still read as text.
+/// manga, and their refreshed chapters are marked as text.
 fn update(mut entry: MediaEntry, details: bool, units: bool) -> Result<MediaEntry> {
     if !details && !units {
         return Ok(entry);
@@ -609,7 +633,7 @@ impl Details {
         let tags: Vec<String> = series.genres.into_iter().map(|genre| genre.name).collect();
         Details {
             url: links::series_url(&series.id, is_novel(series.medium.as_deref())),
-            title: title_or(series.title, series.english_title),
+            title: display_title(series.title, series.english_title, &series.id),
             description: series.synopsis.filter(|text| !text.trim().is_empty()),
             cover: series
                 .poster
@@ -638,7 +662,7 @@ fn chapter(item: ChapterItem, series: &str, groups: &[Scanlator], novel: bool) -
         key: item.id,
         title: item.title.filter(|title| !title.trim().is_empty()),
         volume: None,
-        // Chapter numbers are small; f32 keeps them exact, including fractions like 10.5.
+        // The app stores chapter numbers as f32.
         chapter: item.number.map(|number| number as f32),
         date_updated: item.created_at.map(|millis| millis as f64 / 1000.0),
         scanlator,
@@ -662,8 +686,8 @@ fn pages(entry: &MediaEntry, chapter: &Chapter) -> Result<Vec<Page>> {
         let read: ReadChapterResponse =
             get_json(&query::with_query(&format!("{API}/read/chapter"), &pairs))?;
         let mut images = read.read_chapter.pages;
-        // Chapters saved before novels were supported say images; the site answers those
-        // with no pages, so they are read as text.
+        // Chapters of novels saved before novels were supported say images; the site answers
+        // those with no pages, so they are read as text.
         if !images.is_empty() {
             images.sort_by_key(|page| page.number);
             return images
@@ -681,11 +705,14 @@ fn pages(entry: &MediaEntry, chapter: &Chapter) -> Result<Vec<Page>> {
     let read: NovelChapterResponse = get_json(&query::with_query(
         &format!("{API}/read/novelChapter"),
         &pairs,
-    ))?;
+    ))
+    .map_err(|error| match error {
+        // A comic chapter without pages is not a novel chapter either.
+        Error::NotFound(_) | Error::Host(_) if !text => no_content(),
+        other => other,
+    })?;
     if read.read_novel_chapter.paragraphs.is_empty() {
-        return Err(Error::NotFound(
-            "This Atsumaru chapter has no content".into(),
-        ));
+        return Err(no_content());
     }
     Ok(read
         .read_novel_chapter
@@ -694,6 +721,21 @@ fn pages(entry: &MediaEntry, chapter: &Chapter) -> Result<Vec<Page>> {
         .enumerate()
         .map(|(index, paragraph)| page_at(index, PageContent::Text(paragraph)))
         .collect())
+}
+
+/// Names the Discover section a failure came from, so it can be turned off in settings.
+fn in_section(error: Error, title: &str) -> Error {
+    match error {
+        Error::NotFound(_) => Error::NotFound(format!(
+            "Atsumaru's {title} section is unavailable; turn it off in the source settings"
+        )),
+        Error::Server(message) => Error::Server(format!("{title}: {message}")),
+        other => other,
+    }
+}
+
+fn no_content() -> Error {
+    Error::NotFound("This Atsumaru chapter has no pages".into())
 }
 
 fn page_at(index: usize, content: PageContent) -> Page {
@@ -982,5 +1024,56 @@ mod tests {
             }
             _ => panic!("comic became another kind"),
         }
+    }
+
+    #[test]
+    fn reading_mode_follows_origin() {
+        assert!(matches!(viewer(Some("Manga")), Viewer::Rtl));
+        for origin in [
+            Some("Manwha"),
+            Some("Manhua"),
+            Some("OEL"),
+            Some("Other"),
+            None,
+        ] {
+            assert!(matches!(viewer(origin), Viewer::Webtoon), "{origin:?}");
+        }
+    }
+
+    #[test]
+    fn feeds_drop_entries_outside_the_content_settings() {
+        let content = |rating: &str, adult_only: &str| {
+            let values = [("maximum_rating", rating), ("adult_only", adult_only)];
+            Preferences::parse(|key| {
+                values
+                    .iter()
+                    .find(|(stored, _)| *stored == key)
+                    .map(|(_, value)| (*value).to_owned())
+            })
+            .content
+        };
+        let safe = content("Safe", "false");
+        assert!(feed_allows(Some(Rating::Safe), false, &safe));
+        assert!(feed_allows(None, false, &safe));
+        assert!(!feed_allows(Some(Rating::Suggestive), false, &safe));
+        assert!(!feed_allows(Some(Rating::Safe), true, &safe));
+        let explicit = content("Pornographic", "false");
+        assert!(feed_allows(Some(Rating::Pornographic), true, &explicit));
+        let adult_only = content("Pornographic", "true");
+        assert!(!feed_allows(Some(Rating::Erotica), false, &adult_only));
+        assert!(feed_allows(None, true, &adult_only));
+    }
+
+    #[test]
+    fn titles_fall_back_to_english_then_id() {
+        assert_eq!(
+            display_title(" ".into(), Some("English".into()), "id"),
+            "English"
+        );
+        assert_eq!(
+            display_title(String::new(), Some(String::new()), "id"),
+            "id"
+        );
+        assert_eq!(display_title("Title".into(), None, "id"), "Title");
     }
 }

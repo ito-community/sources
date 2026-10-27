@@ -52,7 +52,7 @@ impl Groups<'_> {
         let id = chapter.scanlation_manga_id.as_deref()?;
         let name = self.get(chapter).map(|group| group.name.as_str());
         names.iter().position(|entry| {
-            entry == id || name.is_some_and(|name| name.eq_ignore_ascii_case(entry))
+            entry == id || name.is_some_and(|name| crate::settings::same_name(name, entry))
         })
     }
 }

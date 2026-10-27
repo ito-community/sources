@@ -31,9 +31,10 @@ check. Site verification prompts still require user interaction.
 
 Atsumaru requires Ito 1.4.0 or newer. Its source settings choose content (comics, novels,
 origin types, maximum rating, blocked tags), search filters, Discover sections and how
-alternative scanlator versions of a chapter are listed. Search filters also narrow results
-used to match tracker entries, so clear them if a title can't be found. Ito has three content
-levels, so the site's Erotica and Pornographic ratings both show as NSFW.
+alternative scanlator versions of a chapter are listed. The maximum rating starts at Safe.
+Content settings and search filters also narrow the results used to match tracker entries,
+so relax them if a title can't be found. Ito has three content levels, so the site's Erotica
+and Pornographic ratings both show as NSFW.
 
 ## Building
 
