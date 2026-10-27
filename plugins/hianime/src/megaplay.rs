@@ -30,9 +30,29 @@ const SOURCE_IV: &[u8; 16] = b"W0;27ToaUpl_P%'c";
 /// Largest caption file that is inlined. A larger track is dropped, not inlined.
 const CAPTION_LIMIT: usize = 512 * 1024;
 
-/// Caption tracks already resolved during one provider call, keyed by track URL. Sub and dub
-/// share their tracks, so each file is fetched once. `None` marks a track that was not inlined.
-pub type CaptionCache = HashMap<String, Option<String>>;
+/// Most caption tracks one provider call inlines, across sub and dub. Later tracks are dropped.
+const CAPTION_TRACK_BUDGET: usize = 12;
+
+/// Most source caption bytes one provider call inlines, across sub and dub.
+const CAPTION_BYTE_BUDGET: usize = 2 * 1024 * 1024;
+
+/// Caption tracks resolved during one provider call. Sub and dub share their tracks, so each file
+/// is fetched once, and the budgets cap what one call inlines across both languages.
+#[derive(Default)]
+pub struct CaptionCache {
+    /// Track URL to its index in `inlined`. `None` marks a track that was not inlined.
+    tracks: HashMap<String, Option<usize>>,
+    /// Inlined WebVTT data URLs. Each is stored once and shared by index.
+    inlined: Vec<String>,
+    /// Source WebVTT bytes inlined so far.
+    inlined_bytes: usize,
+}
+
+impl CaptionCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
 
 /// Audio language of a Ryu stream.
 #[derive(Debug, Clone, Copy)]
@@ -183,7 +203,7 @@ fn subtitles<N: Transport>(
         let Some(file) = track.get("file").and_then(serde_json::Value::as_str) else {
             continue;
         };
-        let Some(url) = inline_caption(net, file, captions)? else {
+        let Some(index) = inline_caption(net, file, captions)? else {
             continue;
         };
         let language = track
@@ -191,7 +211,7 @@ fn subtitles<N: Transport>(
             .and_then(serde_json::Value::as_str)
             .unwrap_or("Unknown");
         subtitles.push(Subtitle {
-            url,
+            url: captions.inlined[index].clone(),
             language: language.to_string(),
             format: "vtt".to_string(),
             is_hardsub: false,
@@ -206,33 +226,51 @@ fn subtitles<N: Transport>(
     Ok(subtitles)
 }
 
-/// Returns the data URL for one caption file, fetching it at most once per provider call.
+/// Returns the index of the track's data URL in `captions`, fetching its file at most once per
+/// provider call.
 ///
-/// `None` means the track is not inlined: its file failed, is not WebVTT, or is over
-/// [`CAPTION_LIMIT`]. A block still fails the call.
+/// `None` means the track is not inlined: its file was blocked or failed, is not WebVTT, is over
+/// [`CAPTION_LIMIT`], or the call has spent its track or byte budget. Only that track is dropped.
+/// A block on a caption does not fail the call.
 fn inline_caption<N: Transport>(
     net: &N,
     file: &str,
     captions: &mut CaptionCache,
-) -> Result<Option<String>, Failure> {
-    if let Some(known) = captions.get(file) {
-        return Ok(known.clone());
+) -> Result<Option<usize>, Failure> {
+    if let Some(known) = captions.tracks.get(file) {
+        return Ok(*known);
     }
-    let inlined = match http::get(
+    if captions.inlined.len() >= CAPTION_TRACK_BUDGET {
+        http::note("MegaPlay: caption track skipped, track budget reached");
+        return Ok(None);
+    }
+    let body = match http::get(
         net,
         Upstream::MegaPlay,
         file,
         &[("Origin", ORIGIN), ("Referer", ORIGIN_REFERER)],
     ) {
-        Ok(response) => caption_data_url(&response.body),
-        Err(blocked @ Failure::Blocked { .. }) => return Err(blocked),
-        Err(Failure::Other(_)) => None,
+        Ok(response) => Some(response.body),
+        Err(Failure::Blocked { .. } | Failure::Other(_)) => None,
     };
-    if inlined.is_none() {
-        http::note("MegaPlay: caption track skipped");
-    }
-    captions.insert(file.to_string(), inlined.clone());
-    Ok(inlined)
+    let inlined = body.and_then(|body| {
+        let fits = captions.inlined_bytes + body.len() <= CAPTION_BYTE_BUDGET;
+        let url = caption_data_url(&body).filter(|_| fits)?;
+        Some((url, body.len()))
+    });
+    let index = match inlined {
+        Some((url, bytes)) => {
+            captions.inlined_bytes += bytes;
+            captions.inlined.push(url);
+            Some(captions.inlined.len() - 1)
+        }
+        None => {
+            http::note("MegaPlay: caption track skipped");
+            None
+        }
+    };
+    captions.tracks.insert(file.to_string(), index);
+    Ok(index)
 }
 
 /// Returns the WebVTT data URL for a caption body, or `None` when the body is not WebVTT or
@@ -463,7 +501,7 @@ mod tests {
     }
 
     #[test]
-    fn a_blocked_caption_fails_the_call() {
+    fn a_blocked_caption_drops_its_track_and_the_stream_still_plays() {
         let net = Canned::new()
             .on(
                 SOURCES_SUB,
@@ -471,23 +509,79 @@ mod tests {
                 sources(json!([{ "kind": "captions", "file": "https://megaplay.buzz/cc/en.vtt", "label": "English" }])),
             )
             .on("https://megaplay.buzz/cc/en.vtt", 403, "");
-        let Err(failure) = extract(
+        let videos = extract(
             &net,
             EMBED_URL,
             EMBED_HTML,
             Lang::Sub,
             "Auto SUB Ryu",
             &mut CaptionCache::new(),
-        ) else {
-            panic!("expected a block");
-        };
-        assert!(matches!(
-            failure,
-            Failure::Blocked {
-                upstream: Upstream::MegaPlay,
-                status: 403
-            }
-        ));
+        )
+        .expect("the stream still plays");
+        let subs = videos[0].subtitles.as_deref().expect("subtitles");
+        let languages: Vec<&str> = subs.iter().map(|track| track.language.as_str()).collect();
+        assert_eq!(languages, ["Off"]);
+    }
+
+    #[test]
+    fn tracks_past_the_track_budget_are_dropped_and_the_stream_still_plays() {
+        let files: Vec<String> = (0..=CAPTION_TRACK_BUDGET)
+            .map(|i| format!("https://megaplay.buzz/cc/t{i}.vtt"))
+            .collect();
+        let tracks: Vec<serde_json::Value> = files
+            .iter()
+            .enumerate()
+            .map(|(i, file)| json!({ "kind": "captions", "file": file, "label": format!("Track {i}") }))
+            .collect();
+        let mut net = Canned::new().on(SOURCES_SUB, 200, sources(json!(tracks)));
+        for file in &files {
+            net = net.on(file, 200, "WEBVTT\n\n00:00.000 --> 00:01.000\nHi\n");
+        }
+        let videos = extract(
+            &net,
+            EMBED_URL,
+            EMBED_HTML,
+            Lang::Sub,
+            "Auto SUB Ryu",
+            &mut CaptionCache::new(),
+        )
+        .expect("the stream still plays");
+        let subs = videos[0].subtitles.as_deref().expect("subtitles");
+        assert_eq!(subs.len(), CAPTION_TRACK_BUDGET + 1, "tracks plus Off");
+        assert_eq!(subs.last().map(|s| s.language.as_str()), Some("Off"));
+        assert_eq!(net.sent_to(&files[CAPTION_TRACK_BUDGET]), 0);
+    }
+
+    #[test]
+    fn tracks_past_the_byte_budget_are_dropped_and_the_stream_still_plays() {
+        let body = format!("WEBVTT\n{}", "x".repeat(CAPTION_LIMIT - "WEBVTT\n".len()));
+        let fitting = CAPTION_BYTE_BUDGET / CAPTION_LIMIT;
+        let files: Vec<String> = (0..=fitting)
+            .map(|i| format!("https://megaplay.buzz/cc/big{i}.vtt"))
+            .collect();
+        let tracks: Vec<serde_json::Value> = files
+            .iter()
+            .map(|file| json!({ "kind": "captions", "file": file, "label": "Big" }))
+            .collect();
+        let mut net = Canned::new().on(SOURCES_SUB, 200, sources(json!(tracks)));
+        for file in &files {
+            net = net.on(file, 200, body.clone());
+        }
+        let videos = extract(
+            &net,
+            EMBED_URL,
+            EMBED_HTML,
+            Lang::Sub,
+            "Auto SUB Ryu",
+            &mut CaptionCache::new(),
+        )
+        .expect("the stream still plays");
+        let subs = videos[0].subtitles.as_deref().expect("subtitles");
+        assert_eq!(
+            subs.len(),
+            fitting + 1,
+            "tracks that fit the byte budget plus Off"
+        );
     }
 
     #[test]

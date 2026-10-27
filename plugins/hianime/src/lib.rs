@@ -5,7 +5,8 @@
 //! embed, and that is the sole source for both sub and dub.
 //!
 //! A page that lacks the structure a call needs is an error, never an empty result. A block
-//! or a challenge fails the call, and nothing retries around it.
+//! or a challenge on the watch page, the stream hop, or a stream fails the call, and nothing
+//! retries around it. A blocked caption track is the one exception: it drops only that track.
 
 use ito_rs::{
     Error, export_anime_plugin,
@@ -107,8 +108,8 @@ fn home<N: Transport>(net: &N) -> Result<HomeLayout, Failure> {
         match listing_row(net, path, title) {
             Ok(row) => components.push(row),
             Err(blocked @ Failure::Blocked { .. }) => return Err(blocked),
-            Err(Failure::Other(error)) => {
-                http::note(&format!("HiAnime: {title} row skipped: {error}"));
+            Err(Failure::Other(_)) => {
+                http::note(&format!("HiAnime: {title} row skipped"));
             }
         }
     }
@@ -604,7 +605,7 @@ mod tests {
         let net = Canned::new().on(
             &format!("{BASE_URL}{key}"),
             200,
-            format!(r#"<main><a href="{movie_watch}">Watch</a></main>"#),
+            format!(r#"<main><div class="hk-title__kick"><span class="hk-tag--line">Movie</span></div><a href="{movie_watch}">Watch</a></main>"#),
         );
         let anime = parse::anime(key.to_string(), "Your Name".to_string(), None);
         let anime = anime_update(&net, anime, false, true).expect("update");
@@ -612,5 +613,18 @@ mod tests {
         assert_eq!(episodes.len(), 1);
         assert_eq!(episodes[0].key, movie_watch);
         assert_eq!(episodes[0].episode, Some(1.0));
+    }
+
+    #[test]
+    fn an_upcoming_show_updates_with_an_empty_episode_list() {
+        let net = Canned::new().on(
+            &format!("{BASE_URL}{SHOW_KEY}"),
+            200,
+            r#"<main><dl class="hk-facts"><dt>Status</dt><dd>Not aired yet</dd></dl></main>"#,
+        );
+        let anime = parse::anime(SHOW_KEY.to_string(), "Show One".to_string(), None);
+        let anime = anime_update(&net, anime, true, true).expect("update");
+        assert_eq!(anime.episodes.map(|episodes| episodes.len()), Some(0));
+        assert!(matches!(anime.status, Status::Unknown));
     }
 }

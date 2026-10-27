@@ -13,6 +13,8 @@
 pub struct Tag<'a> {
     pub name: &'a str,
     attrs: &'a str,
+    /// Byte offset of the tag's opening `<`, relative to the scanned document.
+    start: usize,
     /// Byte offset just past the tag's closing `>`, relative to the scanned document.
     end: usize,
 }
@@ -86,7 +88,12 @@ impl<'a> Iterator for Tags<'a> {
             if name.eq_ignore_ascii_case("script") || name.eq_ignore_ascii_case("style") {
                 self.pos = find_close(&html[end..], name).map_or(html.len(), |at| end + at);
             }
-            return Some(Tag { name, attrs, end });
+            return Some(Tag {
+                name,
+                attrs,
+                start: open,
+                end,
+            });
         }
     }
 }
@@ -119,6 +126,26 @@ pub fn text(markup: &str) -> String {
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
+}
+
+/// Returns the visible text of `markup`: [`text`] without the raw bodies of `script` and `style`.
+pub fn visible_text(markup: &str) -> String {
+    let mut kept = String::with_capacity(markup.len());
+    let mut cursor = 0;
+    let mut scan = tags(markup);
+    while let Some(tag) = scan.next() {
+        kept.push_str(&markup[cursor..tag.start]);
+        kept.push(' ');
+        // The scanner jumps past a raw body, so its position is where visible text resumes.
+        cursor =
+            if tag.name.eq_ignore_ascii_case("script") || tag.name.eq_ignore_ascii_case("style") {
+                scan.pos
+            } else {
+                tag.end
+            };
+    }
+    kept.push_str(&markup[cursor..]);
+    text(&kept)
 }
 
 /// Elements that never have an end tag.

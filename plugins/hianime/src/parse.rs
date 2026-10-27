@@ -103,7 +103,7 @@ pub fn has_next_page(html: &str) -> bool {
 
 /// Returns the N of an "N found" result heading, or `None` when the page shows no such count.
 pub fn result_count(html: &str) -> Option<u32> {
-    let text = markup::text(html);
+    let text = markup::visible_text(html);
     let words: Vec<&str> = text.split_whitespace().collect();
     words.windows(2).find_map(|pair| match pair {
         [count, "found"] => count.replace(',', "").parse().ok(),
@@ -142,9 +142,7 @@ pub fn details(html: &str) -> Details {
         .map(|value| link_texts(value, None))
         .unwrap_or_default();
 
-    let kind = markup::next_element(html, "*", |tag| tag.has_class("hk-title__kick"))
-        .and_then(|kick| markup::next_element(kick.inner, "*", |tag| tag.has_class("hk-tag--line")))
-        .and_then(|line| non_empty(markup::text(line.inner)));
+    let kind = show_type(html);
     let genres = markup::next_element(html, "*", |tag| tag.has_class("hk-facts__genres"))
         .map(|block| link_texts(block.inner, Some("hk-chip")))
         .unwrap_or_default();
@@ -162,13 +160,23 @@ pub fn details(html: &str) -> Details {
 
 /// Parses the episode rows (`section#hk-episodes a.hk-ep`) in page order.
 ///
-/// A page without the episode section is a movie page and yields its single watch link as the
-/// episode (see `movie_episode`). An empty section is an empty list.
+/// A page without the episode section is one of two things. An upcoming show, whose Status is
+/// "Not aired yet", has no episodes yet and yields an empty list. A movie, whose show type is
+/// "Movie", yields its single watch link as the episode (see `movie_episode`). Any other page
+/// without the section is an error. An empty section is an empty list.
 pub fn episodes(html: &str) -> Result<Vec<Episode>> {
     let Some(section) = markup::next_element(html, "section", |tag| {
         tag.attr("id").as_deref() == Some("hk-episodes")
     }) else {
-        return movie_episode(html);
+        if is_not_yet_aired(html) {
+            return Ok(Vec::new());
+        }
+        if is_movie_page(html) {
+            return movie_episode(html);
+        }
+        return Err(Error::Html(
+            "HiAnime details page has no episode list".to_string(),
+        ));
     };
 
     let mut episodes = Vec::new();
@@ -274,7 +282,10 @@ pub fn episode_id_from_token(token: &str) -> Option<String> {
 /// `None`, so the caller keeps the stored status.
 pub fn status_from_text(text: &str) -> Option<Status> {
     let lower = text.to_ascii_lowercase();
-    if lower.contains("airing") {
+    if lower.contains("not aired") {
+        // ito-rs has no not-yet-released status, so Unknown is the closest existing variant.
+        Some(Status::Unknown)
+    } else if lower.contains("airing") {
         Some(Status::Ongoing)
     } else if lower.contains("finished") || lower.contains("completed") {
         Some(Status::Completed)
@@ -415,6 +426,23 @@ fn link_texts(block: &str, required_class: Option<&str>) -> Vec<String> {
 fn non_empty(value: String) -> Option<String> {
     let trimmed = value.trim();
     (!trimmed.is_empty()).then(|| trimmed.to_string())
+}
+
+/// Returns the show type from the details page's kick line, for example `TV` or `Movie`.
+fn show_type(html: &str) -> Option<String> {
+    markup::next_element(html, "*", |tag| tag.has_class("hk-title__kick"))
+        .and_then(|kick| markup::next_element(kick.inner, "*", |tag| tag.has_class("hk-tag--line")))
+        .and_then(|line| non_empty(markup::text(line.inner)))
+}
+
+fn is_movie_page(html: &str) -> bool {
+    show_type(html).is_some_and(|kind| kind.eq_ignore_ascii_case("Movie"))
+}
+
+fn is_not_yet_aired(html: &str) -> bool {
+    let facts = facts(html);
+    fact(&facts, "Status")
+        .is_some_and(|value| markup::text(value).eq_ignore_ascii_case("Not aired yet"))
 }
 
 /// Removes a trailing " (TYPE, YEAR)" from a card title attribute.
@@ -674,7 +702,7 @@ mod tests {
         );
     }
 
-    const MOVIE: &str = r#"<section class="hk-title"><h1 class="hk-title__h" data-en="Your Name">Your Name</h1><a class="hk-btn" href="https://hianime.ms/watch-your-name-7k2m9">Watch</a></section>"#;
+    const MOVIE: &str = r#"<section class="hk-title"><div class="hk-title__kick"><span class="hk-tag--line">Movie</span></div><h1 class="hk-title__h" data-en="Your Name">Your Name</h1><a class="hk-btn" href="https://hianime.ms/watch-your-name-7k2m9">Watch</a></section>"#;
 
     #[test]
     fn a_movie_details_page_yields_one_episode_from_its_watch_link() {
@@ -693,5 +721,31 @@ mod tests {
     fn a_details_page_with_several_bare_watch_links_and_no_episode_section_is_an_error() {
         let html = r#"<main><a href="/watch-your-name-7k2m9">Watch</a><a href="https://hianime.ms/watch-other-show-q3w4e">Other</a><a href="/watch-your-name-7k2m9?ref=2">Again</a></main>"#;
         assert!(matches!(episodes(html), Err(Error::Html(_))));
+    }
+
+    const UPCOMING: &str = r#"<section class="hk-title"><div class="hk-title__kick"><span class="hk-tag--line">TV</span></div><h1 class="hk-title__h" data-en="Upcoming Show">Upcoming Show</h1><dl class="hk-facts"><dt>Status</dt><dd>Not aired yet</dd></dl><span class="hk-tag">Not aired yet</span></section>"#;
+
+    #[test]
+    fn an_upcoming_show_without_an_episode_section_has_no_episodes() {
+        assert!(episodes(UPCOMING).expect("upcoming show").is_empty());
+    }
+
+    #[test]
+    fn an_upcoming_show_maps_its_status_to_unknown() {
+        assert!(matches!(details(UPCOMING).status, Some(Status::Unknown)));
+    }
+
+    #[test]
+    fn a_series_page_missing_its_episode_section_is_an_error_despite_one_bare_watch_link() {
+        let html = r#"<section class="hk-title"><div class="hk-title__kick"><span class="hk-tag--line">TV</span></div><a href="/watch-other-show-q3w4e">Other</a></section>"#;
+        assert!(matches!(episodes(html), Err(Error::Html(_))));
+    }
+
+    #[test]
+    fn result_count_ignores_script_and_style_bodies() {
+        let html =
+            "<style>.x{}</style><script>var s = '5 found';</script><h1><span>58</span> found</h1>";
+        assert_eq!(result_count(html), Some(58));
+        assert_eq!(result_count("<script>3 found</script>"), None);
     }
 }
