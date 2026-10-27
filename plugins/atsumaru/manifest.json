@@ -1,8 +1,8 @@
 {
     "id": "com.kunihir0.ito.atsumaru",
     "name": "Atsumaru",
-    "version": "2.0.2",
-    "min_app_version": "1.0.0",
+    "version": "2.1.0",
+    "min_app_version": "1.4.0",
     "url": "https://atsu.moe",
     "sourceUrl": "https://github.com/ito-community/sources",
     "contentRating": 0,
@@ -12,6 +12,10 @@
         "en"
     ],
     "type": "manga",
+    "kinds": [
+        "manga",
+        "novel"
+    ],
     "author": "kunihir0",
-    "description": "Atsumaru is a manga reading site."
+    "description": "Read and discover manga and novels on Atsumaru."
 }
