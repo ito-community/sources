@@ -146,11 +146,11 @@ async function perform(api, request) {
     return request.key;
   };
   const calls = {
-    list: () => invoke(api.f, "h0", parameters(request.query)),
-    top: () => invoke(api.f, "Nf", parameters(request.query)),
-    detail: () => invoke(api.f, "kX", key()),
-    chapters: () => invoke(api.f, "dq", key(), parameters(request.query)),
-    pages: () => invoke(api.n, "kX", key())
+    list: () => invoke(api.f, "o3", parameters(request.query)),
+    top: () => invoke(api.f, "nb", parameters(request.query)),
+    detail: () => invoke(api.f, "E5", key()),
+    chapters: () => invoke(api.f, "iF", key(), parameters(request.query)),
+    pages: () => invoke(api.n, "E5", key())
   };
   let rejectChallenge;
   const challenged = new Promise((_, reject) => {
@@ -168,12 +168,14 @@ async function perform(api, request) {
   }
 }
 
-// DTO normalization. The site's mappers emit obfuscated keys; these are the mapper outputs:
-//   item   wl: sk=hid, Sl=title, zD=type, Gh=status, wM=synopsis, FJ=latestChapter,
-//          _5={VP:medium, mJ:large}; detail Al adds WD=authors, A_=artists, Mf=genres ({rr,Sl})
-//   meta   ol: cC=page, kk=lastPage (the envelope t9/zV is adapted only in paged())
-//   chapter bn: yH=id, HU=groupId, _x=number, ek=name, hi=votes, e8=isOfficial, Jj={HU,ek}|null
-//   pages  n.kX: rB=[{q4=baseUrl+url}]; q4 is resolved against the page URL
+// DTO normalization. The current pinned client emits:
+//   item   f.o3/f.nb/f.E5: qa=hid, Rv=title, vI=type, QZ=status, vl=synopsis,
+//          Zk=latestChapter, G3={Qq:medium, XN:large}
+//          detail adds Gd=authors, VC=artists, xI=genres ({Xl:id,Rv:title})
+//   meta   list envelope {Kh:items,kZ:meta}; meta mM=page, DP=lastPage
+//   chapter f.iF: Lc=id, p7=groupId, uR=number, K3=name, jI=votes,
+//                jq=isOfficial, Ix={p7,K3}|null
+//   pages  n.E5: CP=[{_u:absolute URL, ...}]
 // Required fields are never defaulted: a missing or mistyped field fails the operation.
 function object(value) {
   if (value === null || typeof value !== "object") throw refuse("shape");
@@ -222,25 +224,25 @@ function absoluteUrl(value) {
 
 function poster(value) {
   object(value);
-  return { small: null, medium: optional(value.VP, text), large: optional(value.mJ, text) };
+  return { small: null, medium: optional(value.Qq, text), large: optional(value.XN, text) };
 }
 
 function mangaSummary(item) {
   object(item);
   return {
-    hash_id: text(item.sk),
-    title: text(item.Sl),
-    type: text(item.zD),
-    status: text(item.Gh),
-    synopsis: optional(item.wM, text),
-    latest_chapter: optional(item.FJ, number),
-    poster: optional(item._5, poster)
+    hash_id: text(item.qa),
+    title: text(item.Rv),
+    type: text(item.vI),
+    status: text(item.QZ),
+    synopsis: optional(item.vl, text),
+    latest_chapter: optional(item.Zk, number),
+    poster: optional(item.G3, poster)
   };
 }
 
 function term(item) {
   object(item);
-  return { title: text(item.Sl) };
+  return { title: text(item.Rv) };
 }
 
 function termList(value) {
@@ -250,31 +252,31 @@ function termList(value) {
 function mangaDetail(item) {
   return {
     ...mangaSummary(item),
-    author: termList(item.WD),
-    artist: termList(item.A_),
-    genre: termList(item.Mf)
+    author: termList(item.Gd),
+    artist: termList(item.VC),
+    genre: termList(item.xI)
   };
 }
 
 function chapter(item) {
   object(item);
   return {
-    chapter_id: integer(item.yH),
-    scanlation_group_id: optional(item.HU, integer),
-    number: number(item._x),
-    name: optional(item.ek, text),
-    votes: integer(item.hi),
-    is_official: flag(item.e8),
-    scanlation_group: item.Jj ? { name: text(object(item.Jj).ek) } : null
+    chapter_id: integer(item.Lc),
+    scanlation_group_id: optional(item.p7, integer),
+    number: number(item.uR),
+    name: optional(item.K3, text),
+    votes: integer(item.jI),
+    is_official: flag(item.jq),
+    scanlation_group: item.Ix ? { name: text(object(item.Ix).K3) } : null
   };
 }
 
 function paged(raw, convert) {
   object(raw);
-  const meta = object(raw.zV);
+  const meta = object(raw.kZ);
   return {
-    items: list(raw.t9, convert),
-    meta: { page: integer(meta.cC), last_page: integer(meta.kk) }
+    items: list(raw.Kh, convert),
+    meta: { page: integer(meta.mM), last_page: integer(meta.DP) }
   };
 }
 
@@ -289,7 +291,7 @@ function normalize(operation, raw) {
     case "chapters":
       return paged(raw, chapter);
     case "pages":
-      return { images: list(object(raw).rB, image => ({ url: absoluteUrl(object(image).q4) })) };
+      return { images: list(object(raw).CP, image => ({ url: absoluteUrl(object(image)._u) })) };
     default:
       throw refuse("operation");
   }

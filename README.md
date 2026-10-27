@@ -25,6 +25,10 @@ https://ito-community.github.io/sources
 | Novel Fire | novel | novelfire.net |
 | VioletScans | manga | violetmanga.com |
 
+Comix requires Ito 1.4.0 or newer. It uses a verified version of the site's browser client;
+if the site changes that client, update the source package rather than bypassing its revision
+check. Site verification prompts still require user interaction.
+
 ## Building
 
 Requires Rust with the `wasm32-unknown-unknown` target and `ito-pkg`:
