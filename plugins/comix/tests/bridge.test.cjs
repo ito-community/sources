@@ -1,0 +1,525 @@
+const { test, after } = require("node:test");
+const assert = require("node:assert/strict");
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { fileURLToPath, pathToFileURL } = require("node:url");
+
+// The bridge runs exactly as the host runs it: an async function body opted in by the marker,
+// with `const request = {...}` prepended. Site modules are real ES modules loaded by import();
+// the page, fetch and crypto around them are stubbed. No network is used.
+const bridgeSource = fs.readFileSync(path.join(__dirname, "../src/bridge.js"), "utf8");
+const AsyncFunction = (async () => {}).constructor;
+const SITE_ORIGIN = "https://comix.to";
+const SELECTORS = { preload: 'link[rel~="modulepreload"]', scripts: "script[src]" };
+
+const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "comix-bridge-"));
+after(() => fs.rmSync(fixtureDir, { recursive: true, force: true }));
+fs.writeFileSync(path.join(fixtureDir, "package.json"), '{"type":"module"}\n');
+fs.writeFileSync(path.join(fixtureDir, "recorder.js"), `export const calls = [];
+export const responses = new Map();
+export function call(name, args) {
+  calls.push({ name, args: JSON.parse(JSON.stringify(args)) });
+  const respond = responses.get(name);
+  if (respond === undefined) throw new Error("no fixture response for " + name);
+  return respond(...args);
+}
+`);
+const recorder = import(pathToFileURL(path.join(fixtureDir, "recorder.js")).href);
+
+let fixtureCount = 0;
+
+function sha256(file) {
+  return crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+}
+
+// Writes a site client module whose facades forward every call to the recorder.
+function writeSite(name, { facade = ["h0", "Nf", "kX", "dq"], pages = ["kX"] } = {}) {
+  const file = path.join(fixtureDir, `apicore-${name}-${fixtureCount++}.js`);
+  const members = (names, prefix) =>
+    names.map(member => `${JSON.stringify(member)}: (...args) => call(${JSON.stringify(prefix + member)}, args)`).join(", ");
+  fs.writeFileSync(file, `import { call } from "./recorder.js";
+export const f = { ${members(facade, "")} };
+export const n = { ${members(pages, "n.")} };
+`);
+  return { file, href: pathToFileURL(file).href, revision: sha256(file) };
+}
+
+function setGlobal(name, value) {
+  Object.defineProperty(globalThis, name, { value, configurable: true, writable: true });
+}
+
+// Installs the page: its origin/URL, the resources and module references it lists, the frames its
+// document holds, an optional itoShowPage handler, and a window whose listeners a test can fire
+// (the site's captcha event).
+function page({ origin = "null", href = `${SITE_ORIGIN}/`, resources = [], preload = [], scripts = [], moduleScripts = [], frames = [], showPage } = {}) {
+  const listeners = new Map();
+  setGlobal("location", { origin, href });
+  setGlobal("performance", { getEntriesByType: () => resources.map(name => ({ name })) });
+  setGlobal("document", {
+    querySelectorAll: selector => {
+      if (selector.startsWith("link")) return preload.map(value => ({ href: value }));
+      if (selector.includes('type="module"')) return moduleScripts.map(value => ({ src: value }));
+      if (selector.startsWith("script")) return scripts.map(value => ({ src: value }));
+      if (selector.includes("iframe")) return frames.map(value => ({ src: value }));
+      return [];
+    }
+  });
+  setGlobal("window", {
+    ...(showPage ? { webkit: { messageHandlers: { itoShowPage: { postMessage: showPage } } } } : {}),
+    addEventListener: (type, listener) => {
+      if (!listeners.has(type)) listeners.set(type, new Set());
+      listeners.get(type).add(listener);
+    },
+    removeEventListener: (type, listener) => listeners.get(type)?.delete(listener)
+  });
+  setGlobal("fetch", async href => {
+    if (!String(href).startsWith("file:")) return { ok: false, status: 404, text: async () => "", arrayBuffer: async () => new ArrayBuffer(0) };
+    const bytes = fs.readFileSync(fileURLToPath(href));
+    return {
+      ok: true,
+      status: 200,
+      text: async () => bytes.toString("utf8"),
+      arrayBuffer: async () => bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    };
+  });
+  return { emit: type => { for (const listener of [...(listeners.get(type) ?? [])]) listener({ detail: {} }); } };
+}
+
+// Runs the composed body exactly as the host prepends it and returns the raw reply string.
+async function runRaw(request) {
+  const script = `//# ito-async\nconst request = ${JSON.stringify(request)};\n${bridgeSource}`;
+  assert.ok(script.startsWith("//# ito-async\n"));
+  const reply = await new AsyncFunction(script)();
+  assert.equal(typeof reply, "string");
+  assert.ok(reply.length > 0, "every path must return a non-empty reply");
+  return reply;
+}
+
+async function run(request) {
+  return JSON.parse(await runRaw(request));
+}
+
+async function reset() {
+  (await recorder).calls.length = 0;
+  (await recorder).responses.clear();
+}
+
+function request(site, overrides = {}) {
+  return { origin: "null", revision: site.revision, operation: "list", query: "", ...overrides };
+}
+
+// Parks the site's facade call until the test settles it. `arrived` resolves once the call reaches
+// the site; `resolve` and `reject` settle the call the way the site would.
+async function parkSiteCall(name) {
+  const gate = {};
+  gate.arrived = new Promise(resolve => {
+    gate.enter = resolve;
+  });
+  gate.result = new Promise((resolve, reject) => {
+    gate.resolve = resolve;
+    gate.reject = reject;
+  });
+  (await recorder).responses.set(name, () => {
+    gate.enter();
+    return gate.result;
+  });
+  return gate;
+}
+
+const mangaDto = (overrides = {}) => ({
+  sk: "hid-1",
+  Sl: "One",
+  zD: "manga",
+  Gh: "releasing",
+  wM: null,
+  FJ: 12,
+  _5: { VP: "https://img.test/m.jpg", mJ: null },
+  ...overrides
+});
+
+const summary = {
+  hash_id: "hid-1",
+  title: "One",
+  type: "manga",
+  status: "releasing",
+  synopsis: null,
+  latest_chapter: 12,
+  poster: { small: null, medium: "https://img.test/m.jpg", large: null }
+};
+
+test("list operation sends literal params to the site's list facade and adapts the envelope once", async () => {
+  await reset();
+  const site = writeSite("list");
+  (await recorder).responses.set("h0", () => ({
+    t9: [mangaDto()],
+    zV: { cC: 2, kk: 3, iK: 30, Fq: 12, yu: 13, $F: 24, __: true, tW: true }
+  }));
+  page({ resources: [site.href] });
+  const query = new URLSearchParams([
+    ["page", "2"],
+    ["keyword", "O'Reilly & café [edition]"],
+    ["genres[]", "-8"],
+    ["genres[]", "13"],
+    ["order[relevance]", "desc"]
+  ]).toString();
+
+  const reply = await run(request(site, { query }));
+
+  assert.deepEqual(reply, { ok: true, data: { items: [summary], meta: { page: 2, last_page: 3 } } });
+  assert.deepEqual((await recorder).calls, [{
+    name: "h0",
+    args: [{ page: 2, keyword: "O'Reilly & café [edition]", genres: [-8, 13], order: { relevance: "desc" } }]
+  }]);
+});
+
+test("numeric search text stays text while numeric filters become numbers", async () => {
+  await reset();
+  const site = writeSite("numeric");
+  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  page({ resources: [site.href] });
+
+  const reply = await run(request(site, { query: "keyword=00123&limit=30" }));
+
+  assert.equal(reply.ok, true);
+  assert.deepEqual((await recorder).calls[0].args, [{ keyword: "00123", limit: 30 }]);
+});
+
+test("top operation calls the site's top facade with its own trending parameters", async () => {
+  await reset();
+  const site = writeSite("top");
+  (await recorder).responses.set("Nf", () => [mangaDto()]);
+  page({ resources: [site.href] });
+
+  const reply = await run(request(site, { operation: "top", query: "type=trending&days=1&limit=20&genres[]=-87264" }));
+
+  assert.deepEqual(reply, { ok: true, data: [summary] });
+  assert.deepEqual((await recorder).calls, [{ name: "Nf", args: [{ type: "trending", days: 1, limit: 20, genres: [-87264] }] }]);
+});
+
+test("detail operation maps the site's term DTOs to authors, artists and genres", async () => {
+  await reset();
+  const site = writeSite("detail");
+  (await recorder).responses.set("kX", () => ({
+    ...mangaDto(),
+    WD: [{ rr: 7, Sl: "Auth" }],
+    A_: [],
+    Mf: [{ rr: 8, Sl: "Action" }]
+  }));
+  page({ resources: [site.href] });
+
+  const reply = await run(request(site, { operation: "detail", key: "hid-1" }));
+
+  assert.deepEqual(reply, {
+    ok: true,
+    data: {
+      ...summary,
+      author: [{ term_id: 7, title: "Auth" }],
+      artist: [],
+      genre: [{ term_id: 8, title: "Action" }]
+    }
+  });
+  assert.deepEqual((await recorder).calls, [{ name: "kX", args: ["hid-1"] }]);
+});
+
+test("chapters operation passes page, limit and order to the site's chapter facade", async () => {
+  await reset();
+  const site = writeSite("chapters");
+  (await recorder).responses.set("dq", () => ({
+    t9: [
+      { yH: 501, Fl: 1, _x: 1.5, Yl: null, ek: "", UC: "en", e8: false, hi: 4, gx: "", HU: null, Jj: null, q4: "x" },
+      { yH: 502, Fl: 1, _x: 2, Yl: null, ek: "Two", UC: "en", e8: true, hi: 0, gx: "", HU: 9, Jj: { HU: 9, ek: "Group" }, q4: "y" }
+    ],
+    zV: { cC: 1, kk: 2 }
+  }));
+  page({ resources: [site.href] });
+
+  const reply = await run(request(site, { operation: "chapters", key: "hid-1", query: "limit=100&page=1&order[number]=desc" }));
+
+  assert.deepEqual(reply, {
+    ok: true,
+    data: {
+      items: [
+        { chapter_id: 501, scanlation_group_id: null, number: 1.5, name: "", votes: 4, is_official: false, scanlation_group: null },
+        { chapter_id: 502, scanlation_group_id: 9, number: 2, name: "Two", votes: 0, is_official: true, scanlation_group: { name: "Group" } }
+      ],
+      meta: { page: 1, last_page: 2 }
+    }
+  });
+  assert.deepEqual((await recorder).calls, [{ name: "dq", args: ["hid-1", { limit: 100, page: 1, order: { number: "desc" } }] }]);
+});
+
+test("pages operation returns direct image URLs, resolving relative ones against the page", async () => {
+  await reset();
+  const site = writeSite("pages");
+  (await recorder).responses.set("n.kX", () => ({
+    rB: [{ q4: "https://cdn.test/1.jpg", FW: 1, V1: 1 }, { q4: "/2.jpg", FW: 1, V1: 1 }]
+  }));
+  page({ resources: [site.href], href: `${SITE_ORIGIN}/title/hid-1/501` });
+
+  const reply = await run(request(site, { operation: "pages", key: "501" }));
+
+  assert.deepEqual(reply, { ok: true, data: { images: [{ url: "https://cdn.test/1.jpg" }, { url: `${SITE_ORIGIN}/2.jpg` }] } });
+  assert.deepEqual((await recorder).calls, [{ name: "n.kX", args: ["501"] }]);
+});
+
+test("non-web page URLs are refused as a shape failure, never passed through", async () => {
+  await reset();
+  const site = writeSite("scheme");
+  (await recorder).responses.set("n.kX", () => ({ rB: [{ q4: "javascript:alert(1)" }] }));
+  page({ resources: [site.href] });
+
+  assert.deepEqual(await run(request(site, { operation: "pages", key: "501" })), { ok: false, kind: "shape" });
+});
+
+test("a module whose hash differs from the pinned revision is refused before any site call", async () => {
+  await reset();
+  const site = writeSite("revision");
+  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  page({ resources: [site.href] });
+
+  assert.deepEqual(await run(request(site, { revision: "0".repeat(64) })), { ok: false, kind: "revision" });
+  assert.equal((await recorder).calls.length, 0);
+});
+
+test("a missing facade method is refused rather than guessed at", async () => {
+  await reset();
+  const site = writeSite("nofacade", { facade: ["Nf", "kX", "dq"] });
+  page({ resources: [site.href] });
+
+  assert.deepEqual(await run(request(site, { query: "page=1" })), { ok: false, kind: "missing-facade" });
+  assert.equal((await recorder).calls.length, 0);
+});
+
+test("only the read-only allowlist is dispatched; arbitrary facade names are refused", async () => {
+  await reset();
+  const site = writeSite("allowlist");
+  page({ resources: [site.href] });
+
+  assert.deepEqual(await run(request(site, { operation: "invoke", query: "" })), { ok: false, kind: "operation" });
+  assert.deepEqual(await run(request(site, { operation: "h0", query: "" })), { ok: false, kind: "operation" });
+  assert.deepEqual(await run(request(site, { operation: "constructor", query: "" })), { ok: false, kind: "operation" });
+  assert.equal((await recorder).calls.length, 0);
+});
+
+test("no client module, or more than one, is refused as missing", async () => {
+  await reset();
+  const first = writeSite("ambiguous-a");
+  const second = writeSite("ambiguous-b");
+  page({ resources: [] });
+  assert.deepEqual(await run(request(first)), { ok: false, kind: "missing-module" });
+  page({ resources: [first.href, second.href] });
+  assert.deepEqual(await run(request(first)), { ok: false, kind: "missing-module" });
+});
+
+test("client candidates from another origin are ignored", async () => {
+  await reset();
+  const site = writeSite("foreign");
+  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  page({ resources: ["https://other.invalid/_app/apicore-x.js", site.href] });
+
+  assert.deepEqual(await run(request(site)), { ok: true, data: { items: [], meta: { page: 1, last_page: 1 } } });
+});
+
+test("the client is found through the main module when the page lists no preload", async () => {
+  await reset();
+  const site = writeSite("linked");
+  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  const mainFile = path.join(fixtureDir, `main-${fixtureCount++}.js`);
+  fs.writeFileSync(mainFile, `export const boot = () => import("./${path.basename(site.file)}");\n`);
+  page({ moduleScripts: [pathToFileURL(mainFile).href] });
+
+  assert.deepEqual(await run(request(site)), { ok: true, data: { items: [], meta: { page: 1, last_page: 1 } } });
+  assert.equal((await recorder).calls.length, 1);
+});
+
+test("a challenge during a call rejects the operation instead of leaving it parked", async () => {
+  await reset();
+  const site = writeSite("challenge");
+  let started;
+  const invoked = new Promise(resolve => {
+    started = resolve;
+  });
+  (await recorder).responses.set("h0", () => {
+    started();
+    return new Promise(() => {});
+  });
+  const sitePage = page({ resources: [site.href] });
+
+  const pending = runRaw(request(site, { query: "page=1" }));
+  await invoked;
+  sitePage.emit("waf:captcha:open");
+
+  assert.deepEqual(JSON.parse(await pending), { ok: false, kind: "challenge" });
+});
+
+test("a host reply of true keeps the call pending until the site resolves it", async () => {
+  await reset();
+  const site = writeSite("shown");
+  const gate = await parkSiteCall("h0");
+  const asked = [];
+  const sitePage = page({ resources: [site.href], showPage: value => {
+    asked.push(value);
+    return true;
+  } });
+  const pending = runRaw(request(site, { query: "page=1" }));
+
+  await gate.arrived;
+  sitePage.emit("waf:captcha:open");
+  gate.resolve({ t9: [mangaDto()], zV: { cC: 1, kk: 1 } });
+
+  assert.deepEqual(JSON.parse(await pending), { ok: true, data: { items: [summary], meta: { page: 1, last_page: 1 } } });
+  assert.deepEqual(asked, [null]);
+});
+
+test("a host reply of false rejects the call with a challenge", async () => {
+  await reset();
+  const site = writeSite("declined");
+  const gate = await parkSiteCall("h0");
+  const sitePage = page({ resources: [site.href], showPage: () => false });
+  const pending = runRaw(request(site, { query: "page=1" }));
+
+  await gate.arrived;
+  sitePage.emit("waf:captcha:open");
+
+  assert.deepEqual(JSON.parse(await pending), { ok: false, kind: "challenge" });
+});
+
+test("a rejecting, throwing or missing host handler counts as a refusal", async () => {
+  const handlers = [
+    ["rejecting", () => Promise.reject(new Error("refused"))],
+    ["throwing", () => {
+      throw new Error("no handler");
+    }],
+    ["missing", undefined]
+  ];
+  for (const [label, showPage] of handlers) {
+    await reset();
+    const site = writeSite(`refusal-${label}`);
+    const gate = await parkSiteCall("h0");
+    const sitePage = page({ resources: [site.href], showPage });
+    const pending = runRaw(request(site, { query: "page=1" }));
+
+    await gate.arrived;
+    sitePage.emit("waf:captcha:open");
+
+    assert.deepEqual(JSON.parse(await pending), { ok: false, kind: "challenge" }, label);
+  }
+});
+
+test("a verification dialog already open when the call starts asks the host, and waits when shown", async () => {
+  await reset();
+  const site = writeSite("already-shown");
+  const gate = await parkSiteCall("h0");
+  const asked = [];
+  page({ resources: [site.href], frames: [`${SITE_ORIGIN}/@waf/challenge`], showPage: value => {
+    asked.push(value);
+    return true;
+  } });
+  const pending = runRaw(request(site, { query: "page=1" }));
+
+  await gate.arrived;
+  gate.resolve({ t9: [], zV: { cC: 1, kk: 1 } });
+
+  assert.deepEqual(JSON.parse(await pending), { ok: true, data: { items: [], meta: { page: 1, last_page: 1 } } });
+  assert.deepEqual(asked, [null]);
+});
+
+test("a verification dialog already open when the call starts is refused when the host declines", async () => {
+  await reset();
+  const site = writeSite("already-declined");
+  await parkSiteCall("h0");
+  page({ resources: [site.href], frames: [`${SITE_ORIGIN}/@waf/challenge`], showPage: () => false });
+
+  assert.deepEqual(JSON.parse(await runRaw(request(site, { query: "page=1" }))), { ok: false, kind: "challenge" });
+});
+
+test("a call without a verification frame never asks the host, even with other frames open", async () => {
+  await reset();
+  const site = writeSite("quiet");
+  (await recorder).responses.set("h0", () => ({ t9: [], zV: { cC: 1, kk: 1 } }));
+  const asked = [];
+  page({
+    resources: [site.href],
+    frames: ["https://other.invalid/@waf/challenge", `${SITE_ORIGIN}/title/hid-1`],
+    showPage: value => {
+      asked.push(value);
+      return true;
+    }
+  });
+
+  assert.deepEqual(await run(request(site, { query: "page=1" })), { ok: true, data: { items: [], meta: { page: 1, last_page: 1 } } });
+  assert.deepEqual(asked, []);
+});
+
+test("a verification the user cancels after the host showed it is still a challenge", async () => {
+  await reset();
+  const site = writeSite("cancelled");
+  const gate = await parkSiteCall("h0");
+  const sitePage = page({ resources: [site.href], showPage: () => true });
+  const pending = runRaw(request(site, { query: "page=1" }));
+
+  await gate.arrived;
+  sitePage.emit("waf:captcha:open");
+  gate.reject(new Error("waf_captcha_cancelled"));
+
+  assert.deepEqual(JSON.parse(await pending), { ok: false, kind: "challenge" });
+});
+
+test("a cancelled captcha is a challenge, and HTTP failures keep their status without the body", async () => {
+  await reset();
+  const site = writeSite("failures");
+  page({ resources: [site.href] });
+  (await recorder).responses.set("h0", () => {
+    throw new Error("waf_captcha_cancelled");
+  });
+  assert.deepEqual(await run(request(site, { query: "page=1" })), { ok: false, kind: "challenge" });
+
+  (await recorder).responses.set("h0", () => {
+    throw Object.assign(new Error("forbidden"), { response: { status: 403, data: { secret: "do-not-leak" } } });
+  });
+  const raw = await runRaw(request(site, { query: "page=1" }));
+  assert.deepEqual(JSON.parse(raw), { ok: false, kind: "http", status: 403 });
+  assert.equal(raw.includes("do-not-leak"), false);
+});
+
+test("a chapter without a required flag fails the whole operation rather than returning partial items", async () => {
+  await reset();
+  const site = writeSite("partial");
+  (await recorder).responses.set("dq", () => ({
+    t9: [{ yH: 501, _x: 1, ek: "", hi: 0, HU: null, Jj: null, q4: "x" }],
+    zV: { cC: 1, kk: 2 }
+  }));
+  page({ resources: [site.href] });
+
+  assert.deepEqual(await run(request(site, { operation: "chapters", key: "hid-1", query: "page=1" })), { ok: false, kind: "shape" });
+});
+
+test("page metadata is required: a missing current page is not defaulted", async () => {
+  await reset();
+  const site = writeSite("meta");
+  (await recorder).responses.set("h0", () => ({ t9: [], zV: { kk: 3 } }));
+  page({ resources: [site.href] });
+
+  assert.deepEqual(await run(request(site, { query: "page=1" })), { ok: false, kind: "shape" });
+});
+
+test("query names cannot reach prototype machinery", async () => {
+  await reset();
+  const site = writeSite("proto");
+  page({ resources: [site.href] });
+
+  assert.deepEqual(await run(request(site, { query: "__proto__[polluted]=1" })), { ok: false, kind: "query" });
+  assert.equal({}.polluted, undefined);
+  assert.equal((await recorder).calls.length, 0);
+});
+
+test("a page on another origin is refused before any client lookup", async () => {
+  await reset();
+  const site = writeSite("origin");
+  page({ origin: "https://other.invalid", resources: [site.href] });
+
+  assert.deepEqual(await run(request(site)), { ok: false, kind: "origin" });
+  assert.equal((await recorder).calls.length, 0);
+});

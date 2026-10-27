@@ -1,19 +1,19 @@
 pub fn hide_nsfw() -> bool {
-	true
+    true
 }
 
 pub fn image_quality() -> String {
-	"medium".to_string()
+    "medium".to_string()
 }
 
 pub fn dedupchapter() -> bool {
-	false
+    false
 }
 
 pub fn hidden_types() -> Vec<String> {
-	Vec::new()
+    Vec::new()
 }
 
 pub fn hidden_terms() -> Vec<i32> {
-	Vec::new()
+    Vec::new()
 }
