@@ -47,6 +47,21 @@ pub struct SearchIds {
     pub include_tags: Vec<String>,
 }
 
+/// Reject contradictions after resolving legacy names and catalog values to site ids.
+pub fn validate_search_ids(ids: &SearchIds, blocked_tags: &[String]) -> ito_rs::Result<()> {
+    if ids
+        .include_genres
+        .iter()
+        .any(|id| ids.exclude_genres.contains(id))
+        || ids.include_tags.iter().any(|id| blocked_tags.contains(id))
+    {
+        return Err(ito_rs::Error::NeedsSetup(
+            "A required genre or tag is also excluded.".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Maps names (case-insensitive) or ids to ids. Returns the first unknown entry as the error.
 pub fn resolve<'a>(entries: &'a [String], terms: &[Term]) -> Result<Vec<String>, &'a str> {
     let mut ids = Vec::with_capacity(entries.len());
@@ -278,6 +293,35 @@ mod tests {
     use super::*;
     use crate::settings::Preferences;
 
+    #[test]
+    fn resolved_alias_conflicts_require_setup() {
+        let terms = [Term {
+            id: "site-id".into(),
+            name: "Legacy name".into(),
+            group: None,
+        }];
+        let names = resolve(&["legacy NAME".into()], &terms).unwrap();
+        let values = resolve(&["site-id".into()], &terms).unwrap();
+        let tags = SearchIds {
+            include_tags: values.clone(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_search_ids(&tags, &names),
+            Err(ito_rs::Error::NeedsSetup(_))
+        ));
+        let genres = SearchIds {
+            include_genres: names,
+            exclude_genres: values,
+            ..Default::default()
+        };
+        assert!(matches!(
+            validate_search_ids(&genres, &[]),
+            Err(ito_rs::Error::NeedsSetup(_))
+        ));
+        assert!(validate_search_ids(&tags, &["different-id".into()]).is_ok());
+    }
+
     fn content(values: &[(&str, &str)]) -> ContentPreferences {
         let values: Vec<(String, String)> = values
             .iter()
@@ -400,10 +444,12 @@ mod tests {
             Term {
                 id: "g1".into(),
                 name: "Slice of Life".into(),
+                group: None,
             },
             Term {
                 id: "g2".into(),
                 name: "Action".into(),
+                group: None,
             },
         ];
         let entries = vec![

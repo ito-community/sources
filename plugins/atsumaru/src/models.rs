@@ -158,4 +158,5 @@ pub struct Taxonomy {
 pub struct Term {
     pub id: String,
     pub name: String,
+    pub group: Option<String>,
 }

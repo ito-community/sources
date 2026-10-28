@@ -16,6 +16,7 @@ use ito_rs::{Error, Result};
 use serde::de::DeserializeOwned;
 
 mod chapters;
+mod controls;
 mod links;
 mod models;
 mod query;
@@ -266,8 +267,17 @@ fn blocked_tag_ids(preferences: &Preferences) -> Result<Vec<String>> {
     })
 }
 
-fn search_catalog(query: &str, page: i32, kind: Option<MediaKind>) -> Result<MediaPageResult> {
-    let preferences = preferences()?;
+fn search_catalog(
+    query: &str,
+    page: i32,
+    kind: Option<MediaKind>,
+    filters: &[FilterItem],
+) -> Result<MediaPageResult> {
+    let preferences = controls::search_preferences(
+        |key| ito_rs::defaults::get(key).ok().flatten(),
+        filters,
+        kind,
+    )?;
     let ceiling = preferences.content.max_rating;
     let mediums = query::mediums(&preferences.content, kind);
     if mediums.is_empty() {
@@ -282,11 +292,9 @@ fn search_catalog(query: &str, page: i32, kind: Option<MediaKind>) -> Result<Med
         exclude_genres: ids(&search.exclude_genres, |taxonomy| &taxonomy.genres)?,
         include_tags: ids(&search.include_tags, |taxonomy| &taxonomy.tags)?,
     };
-    let mut filters = query::catalog_filters(
-        &preferences.content,
-        &mediums,
-        &blocked_tag_ids(&preferences)?,
-    );
+    let blocked = blocked_tag_ids(&preferences)?;
+    query::validate_search_ids(&search_ids, &blocked)?;
+    let mut filters = query::catalog_filters(&preferences.content, &mediums, &blocked);
     filters.extend(query::search_filters(search, &search_ids));
     search_page(
         &query::search_url(query, page, filters, search.sort),
@@ -348,6 +356,7 @@ fn spotlight(preferences: &Preferences) -> Result<Option<Term>> {
             Some(Term {
                 id: genre.id.clone(),
                 name: genre.name.clone(),
+                group: genre.group.clone(),
             })
         })
         .ok_or_else(unknown_filter_name)
@@ -807,6 +816,8 @@ fn check_filter_names() -> Result<String> {
             taxonomy.tags.as_slice(),
         )
     }));
+    // Rich search owns these fields now; obsolete saved search names are not diagnostics.
+    fields.retain(|(label, _, _)| !controls::is_rich_host() || !label.starts_with("Search · "));
     Ok(filter_report(&fields))
 }
 
@@ -842,6 +853,23 @@ impl SourceProvider for Atsumaru {
         Some(settings::schema())
     }
 
+    fn get_settings_form() -> Result<ito_rs::controls::SettingsForm> {
+        Ok(controls::settings_form())
+    }
+
+    fn get_search_capabilities(
+        kind: Option<MediaKind>,
+    ) -> Result<ito_rs::controls::SearchCapabilities> {
+        controls::negotiate_rich_host();
+        controls::capabilities(kind)
+    }
+
+    fn get_option_page(
+        request: ito_rs::controls::OptionRequest,
+    ) -> Result<ito_rs::controls::OptionPage> {
+        controls::option_page(taxonomy()?.as_ref(), request)
+    }
+
     fn get_settings_actions() -> Result<Vec<SettingsAction>> {
         Ok(vec![SettingsAction {
             id: CHECK_FILTERS.into(),
@@ -871,11 +899,7 @@ impl SourceProvider for Atsumaru {
         kind: Option<MediaKind>,
         filters: Vec<FilterItem>,
     ) -> Result<MediaPageResult> {
-        // Filtering is configured in settings; the host sends no filters of its own.
-        if !filters.is_empty() {
-            return Err(Error::Unsupported);
-        }
-        search_catalog(query, page, kind)
+        search_catalog(query, page, kind, &filters)
     }
 
     fn get_media_update(
@@ -981,6 +1005,7 @@ mod tests {
         let genres = [Term {
             id: "g1".into(),
             name: "Action".into(),
+            group: None,
         }];
         let fields: Vec<(String, Vec<String>, &[Term])> = vec![
             (
