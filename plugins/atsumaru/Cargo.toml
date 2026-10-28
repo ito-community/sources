@@ -11,6 +11,6 @@ lto = true
 opt-level = "s"
 
 [dependencies]
-ito-rs = { git = "https://github.com/itoapp/ito-rs", rev = "d714347b9f183c5bd38abe85948d05d0b469256f" }
+ito-rs = { git = "https://github.com/itoapp/ito-rs", rev = "197dde8d6d09b33f3a4d8af7427df5137ef3ad1b" }
 serde_json = "1.0.150"
 serde = { version = "1.0.228", features = ["derive"] }

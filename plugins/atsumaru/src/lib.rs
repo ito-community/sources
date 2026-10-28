@@ -292,11 +292,9 @@ fn search_catalog(
         exclude_genres: ids(&search.exclude_genres, |taxonomy| &taxonomy.genres)?,
         include_tags: ids(&search.include_tags, |taxonomy| &taxonomy.tags)?,
     };
-    let mut filters = query::catalog_filters(
-        &preferences.content,
-        &mediums,
-        &blocked_tag_ids(&preferences)?,
-    );
+    let blocked = blocked_tag_ids(&preferences)?;
+    query::validate_search_ids(&search_ids, &blocked)?;
+    let mut filters = query::catalog_filters(&preferences.content, &mediums, &blocked);
     filters.extend(query::search_filters(search, &search_ids));
     search_page(
         &query::search_url(query, page, filters, search.sort),
@@ -818,6 +816,8 @@ fn check_filter_names() -> Result<String> {
             taxonomy.tags.as_slice(),
         )
     }));
+    // Rich search owns these fields now; obsolete saved search names are not diagnostics.
+    fields.retain(|(label, _, _)| !controls::is_rich_host() || !label.starts_with("Search · "));
     Ok(filter_report(&fields))
 }
 
@@ -860,6 +860,7 @@ impl SourceProvider for Atsumaru {
     fn get_search_capabilities(
         kind: Option<MediaKind>,
     ) -> Result<ito_rs::controls::SearchCapabilities> {
+        controls::negotiate_rich_host();
         controls::capabilities(kind)
     }
 

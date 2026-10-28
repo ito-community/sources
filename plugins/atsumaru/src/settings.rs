@@ -553,12 +553,23 @@ pub struct Preferences {
 impl Preferences {
     /// Reads the saved settings. Absent values use the schema defaults.
     pub fn load() -> Self {
-        Self::parse(|key| ito_rs::defaults::get(key).ok().flatten())
+        Self::parse_general(|key| ito_rs::defaults::get(key).ok().flatten())
+    }
+
+    /// General operations never consume obsolete search-only settings.
+    pub fn parse_general(get: impl Fn(&str) -> Option<String>) -> Self {
+        Self::parse(|key| {
+            if key.starts_with("search_") {
+                None
+            } else {
+                get(key)
+            }
+        })
     }
 
     pub fn parse(get: impl Fn(&str) -> Option<String>) -> Self {
         let form = crate::controls::form();
-        let rich = get(crate::controls::CONTENT_TYPES).is_some();
+        let rich = crate::controls::is_rich_host() || get(crate::controls::CONTENT_TYPES).is_some();
         let values = ito_rs::controls::ControlValues::settings_with(&form, &get);
         let effective = |key: &str| {
             if rich

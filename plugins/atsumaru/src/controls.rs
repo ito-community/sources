@@ -12,6 +12,20 @@ use ito_rs::controls::{
 };
 use ito_rs::models::{FilterItem, MediaKind, Setting};
 use ito_rs::{Error, Result};
+use std::cell::Cell;
+
+thread_local! {
+    // Negotiation is scoped to this plugin instance, never persisted into old-host settings.
+    static RICH_HOST: Cell<bool> = const { Cell::new(false) };
+}
+
+pub fn negotiate_rich_host() {
+    RICH_HOST.set(true);
+}
+
+pub fn is_rich_host() -> bool {
+    RICH_HOST.get()
+}
 
 pub const CONTENT_TYPES: &str = "content_types";
 pub const BLOCKED_TAG_IDS: &str = "blocked_tag_ids";
@@ -103,11 +117,13 @@ pub fn form() -> SettingsForm {
                 )
                 .visible_when("home_spotlight", vec!["true".into()]),
             ),
-            settings::POPULARITY_PERIOD | settings::BOOKMARK_PERIOD | settings::TALKED_PERIOD => {
-                let target = match control.id.as_str() {
-                    settings::POPULARITY_PERIOD => "home_popular",
-                    settings::BOOKMARK_PERIOD => "home_bookmarked",
-                    _ => "home_talked",
+            // Popular and Novels share this window; neither section alone controls it.
+            settings::POPULARITY_PERIOD => discover.controls.push(control),
+            settings::BOOKMARK_PERIOD | settings::TALKED_PERIOD => {
+                let target = if control.id == settings::BOOKMARK_PERIOD {
+                    "home_bookmarked"
+                } else {
+                    "home_talked"
                 };
                 discover
                     .controls
@@ -162,6 +178,7 @@ pub fn type_migration(get: impl Fn(&str) -> Option<String>) -> Option<String> {
 }
 
 pub fn settings_form() -> SettingsForm {
+    negotiate_rich_host();
     if let Some(value) = type_migration(|key| ito_rs::defaults::get(key).ok().flatten()) {
         ito_rs::defaults::set(CONTENT_TYPES, &value);
     }
@@ -238,7 +255,7 @@ pub fn capabilities(kind: Option<MediaKind>) -> Result<SearchCapabilities> {
     })
 }
 
-/// Dense host filters replace only search preferences; empty filters retain legacy defaults.
+/// Only an unnegotiated host's empty filters retain legacy search defaults and validation.
 pub fn search_preferences(
     get: impl Fn(&str) -> Option<String>,
     filters: &[FilterItem],
@@ -246,7 +263,7 @@ pub fn search_preferences(
 ) -> Result<Preferences> {
     let values = ControlValues::search(&capabilities(kind)?, filters)?;
     let mut preferences = Preferences::parse(|key| {
-        if values.is_host_provided() && key.starts_with("search_") {
+        if (values.is_host_provided() || is_rich_host()) && key.starts_with("search_") {
             None
         } else {
             get(key)
@@ -479,6 +496,33 @@ mod tests {
         assert!(crate::query::resolve(&["missing".into()], &taxonomy.tags).is_err());
         assert!(taxonomy.genres[0].group.is_none());
     }
+
+    #[test]
+    fn rich_required_tag_id_conflicts_with_unedited_legacy_blocked_name() {
+        let filters = [FilterItem {
+            name: "tags_all".into(),
+            type_name: "multi_select".into(),
+            value: FilterValue::String("[\"t2\"]".into()),
+        }];
+        let parsed = search_preferences(
+            |key| (key == settings::EXCLUDE_TAGS).then(|| "Blue".into()),
+            &filters,
+            None,
+        )
+        .unwrap();
+        let taxonomy = taxonomy();
+        let blocked = crate::query::resolve(&parsed.content.excluded_tags, &taxonomy.tags).unwrap();
+        let required = crate::query::SearchIds {
+            include_tags: crate::query::resolve(&parsed.search.include_tags, &taxonomy.tags)
+                .unwrap(),
+            ..Default::default()
+        };
+        assert!(matches!(
+            crate::query::validate_search_ids(&required, &blocked),
+            Err(Error::NeedsSetup(_))
+        ));
+        assert_eq!(parsed.content.excluded_tags, vec!["Blue"]);
+    }
     #[test]
     fn local_type_migration_is_canonical_idempotent_and_preserves_invalid_legacy() {
         assert_eq!(
@@ -544,6 +588,70 @@ mod tests {
 #[cfg(test)]
 mod migration_tests {
     use super::*;
+
+    #[test]
+    fn general_operations_ignore_obsolete_search_but_legacy_search_rejects_it() {
+        let stored = [
+            (settings::YEAR_FROM, "not a year"),
+            (settings::SORT, "not a sort"),
+            (settings::INCLUDE_GENRES, "Action"),
+            (settings::EXCLUDE_GENRES, "Action"),
+        ];
+        let get = |key: &str| {
+            stored
+                .iter()
+                .find(|(id, _)| *id == key)
+                .map(|(_, value)| (*value).to_owned())
+        };
+        assert!(Preferences::parse_general(get).issues().is_empty());
+        assert!(matches!(
+            search_preferences(get, &[], None),
+            Err(Error::NeedsSetup(_))
+        ));
+        assert_eq!(get(settings::YEAR_FROM).as_deref(), Some("not a year"));
+    }
+
+    #[test]
+    fn rich_negotiation_works_before_any_new_key_is_saved() {
+        struct ResetRichHost(bool);
+        impl Drop for ResetRichHost {
+            fn drop(&mut self) {
+                RICH_HOST.set(self.0);
+            }
+        }
+        let _reset = ResetRichHost(RICH_HOST.replace(false));
+        let get = |key: &str| match key {
+            settings::YEAR_FROM => Some("invalid legacy year".into()),
+            settings::SORT => Some("Trending".into()),
+            settings::ADULT_ONLY => Some("true".into()),
+            _ => None,
+        };
+        assert!(search_preferences(get, &[], None).is_err());
+        negotiate_rich_host();
+        let general = Preferences::parse_general(get);
+        assert!(general.issues().is_empty());
+        assert!(!general.content.adult_only);
+        let search = search_preferences(get, &[], None).unwrap();
+        assert!(search.issues().is_empty());
+        assert_eq!(search.search.sort, Sort::Popularity);
+        assert_eq!(search.search.year_from, None);
+        assert_eq!(get(CONTENT_TYPES), None);
+        assert_eq!(get(settings::SORT).as_deref(), Some("Trending"));
+    }
+
+    #[test]
+    fn novel_only_rich_discover_keeps_the_shared_popularity_window() {
+        let parsed = preferences(&[
+            (CONTENT_TYPES, "[]"),
+            ("home_popular", "false"),
+            ("home_novels", "true"),
+            (settings::POPULARITY_PERIOD, "Weekly"),
+        ]);
+        assert!(parsed.issues().is_empty());
+        let novels = settings::section("home_novels").unwrap();
+        assert!(parsed.section_enabled(novels));
+        assert_eq!(parsed.period(novels), Some(settings::Period::Weekly));
+    }
 
     fn preferences(values: &[(&str, &str)]) -> Preferences {
         Preferences::parse(|key| {
