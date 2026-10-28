@@ -400,10 +400,12 @@ mod tests {
             Term {
                 id: "g1".into(),
                 name: "Slice of Life".into(),
+                group: None,
             },
             Term {
                 id: "g2".into(),
                 name: "Action".into(),
+                group: None,
             },
         ];
         let entries = vec![

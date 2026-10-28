@@ -1,8 +1,8 @@
 //! Source settings: the schema shown by the host and the typed preferences parsed from it.
 //!
 //! Parsing is pure (it reads through a lookup function) so policy can be tested natively.
-//! Settings are flat in the current host contract, so each name starts with the area it
-//! applies to.
+//! Legacy hosts retain the flat schema. Rich settings reuse keys with compatible values
+//! and apply visibility/defaults through `ControlValues`.
 
 use ito_rs::models::{Setting, SettingIssue, SettingsSchema};
 
@@ -557,15 +557,71 @@ impl Preferences {
     }
 
     pub fn parse(get: impl Fn(&str) -> Option<String>) -> Self {
+        let form = crate::controls::form();
+        let rich = get(crate::controls::CONTENT_TYPES).is_some();
+        let values = ito_rs::controls::ControlValues::settings_with(&form, &get);
+        let effective = |key: &str| {
+            if rich
+                && form
+                    .sections
+                    .iter()
+                    .any(|section| section.controls.iter().any(|control| control.id == key))
+            {
+                let control = form
+                    .sections
+                    .iter()
+                    .flat_map(|section| &section.controls)
+                    .find(|control| control.id == key)?;
+                match &control.kind {
+                    ito_rs::controls::ControlKind::Toggle(_) => {
+                        values.toggle(key).ok().map(|value| value.to_string())
+                    }
+                    ito_rs::controls::ControlKind::Select(_) => {
+                        if key == crate::controls::SPOTLIGHT_GENRE_ID && get(key).is_none() {
+                            None
+                        } else {
+                            values
+                                .select(key)
+                                .ok()
+                                .map(|value| value.unwrap_or_default().to_owned())
+                        }
+                    }
+                    ito_rs::controls::ControlKind::Text(_) => {
+                        values.text(key).ok().map(str::to_owned)
+                    }
+                    _ => get(key),
+                }
+            } else {
+                get(key)
+            }
+        };
+        let mut parsed = Self::parse_effective(effective);
+        if rich {
+            parsed.issues.extend(
+                values
+                    .issues()
+                    .iter()
+                    .map(|problem| issue(&problem.key, &problem.message)),
+            );
+        }
+        parsed
+    }
+
+    fn parse_effective(get: impl Fn(&str) -> Option<String>) -> Self {
         let mut parser = Parser {
             get,
             issues: Vec::new(),
         };
-        let mut excluded_tags = parser.list(EXCLUDE_TAGS);
-        for (id, _) in TAG_GROUPS {
-            excluded_tags.extend(parser.list(id));
-        }
-        dedupe_case_insensitive(&mut excluded_tags);
+        let excluded_tags = if parser.raw(crate::controls::BLOCKED_TAG_IDS).is_some() {
+            parser.catalog_list(crate::controls::BLOCKED_TAG_IDS, 500)
+        } else {
+            let mut tags = parser.list(EXCLUDE_TAGS);
+            for (id, _) in TAG_GROUPS {
+                tags.extend(parser.list(id));
+            }
+            dedupe_case_insensitive(&mut tags);
+            tags
+        };
 
         let content = ContentPreferences {
             include_comics: parser.toggle(INCLUDE_COMICS, true),
@@ -622,11 +678,19 @@ impl Preferences {
         .into_iter()
         .map(|(id, default)| (id, parser.choice(id, &Period::ALL, Period::name, default)))
         .collect();
-        let spotlight_genre = parser.list(SPOTLIGHT_GENRE);
-        if spotlight_genre.len() > 1 {
-            parser.issue(SPOTLIGHT_GENRE, "Enter one genre.");
-        }
-
+        let spotlight_genre = if let Some(value) = parser.raw(crate::controls::SPOTLIGHT_GENRE_ID) {
+            if value.is_empty() {
+                Vec::new()
+            } else {
+                vec![value]
+            }
+        } else {
+            let genres = parser.list(SPOTLIGHT_GENRE);
+            if genres.len() > 1 {
+                parser.issue(SPOTLIGHT_GENRE, "Enter one genre.");
+            }
+            genres
+        };
         let mut preferences = Preferences {
             content,
             search,
@@ -767,7 +831,37 @@ impl<F: Fn(&str) -> Option<String>> Parser<F> {
         parsed
     }
 
+    fn catalog_list(&mut self, key: &str, max: u32) -> Vec<String> {
+        use ito_rs::controls::{ControlKind, ControlValue, MultiSelectControl, OptionSource};
+        let kind = ControlKind::MultiSelect(MultiSelectControl {
+            options: OptionSource::searchable_catalog("tags"),
+            default_value: Vec::new(),
+            max_selected: Some(max),
+        });
+        match kind.parse_value(&self.raw(key).unwrap_or_default()) {
+            Ok(ControlValue::MultiSelect(values)) => values,
+            _ => {
+                self.issue(key, "Choose valid catalog identifiers.");
+                Vec::new()
+            }
+        }
+    }
+
     fn types(&mut self) -> Vec<&'static str> {
+        if self.raw(crate::controls::CONTENT_TYPES).is_some() {
+            let values = self.catalog_list(crate::controls::CONTENT_TYPES, 5);
+            let mut types = Vec::new();
+            for value in values {
+                match TYPE_NAMES.iter().find(|(_, site)| *site == value) {
+                    Some((_, site)) => types.push(*site),
+                    None => self.issue(
+                        crate::controls::CONTENT_TYPES,
+                        "Choose one of the listed origin types.",
+                    ),
+                }
+            }
+            return types;
+        }
         let mut types = Vec::new();
         let mut unknown = false;
         for name in self.list(TYPES) {

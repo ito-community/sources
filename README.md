@@ -29,12 +29,13 @@ Comix requires Ito 1.4.0 or newer. It uses a verified version of the site's brow
 if the site changes that client, update the source package rather than bypassing its revision
 check. Site verification prompts still require user interaction.
 
-Atsumaru requires Ito 1.4.0 or newer. Its source settings choose content (comics, novels,
-origin types, maximum rating, blocked tags), search filters, Discover sections and how
-alternative scanlator versions of a chapter are listed. The maximum rating starts at Safe.
-Content settings and search filters also narrow the results used to match tracker entries,
-so relax them if a title can't be found. Ito has three content levels, so the site's Erotica
-and Pornographic ratings both show as NSFW.
+Atsumaru requires Ito 1.4.0 or newer. Hosts with rich controls show grouped source settings,
+searchable tag and genre selection, and per-search filters and sorting. Earlier hosts keep
+the text-based settings and search preferences. Content, Discover and chapter preferences
+are saved; per-search filters on rich hosts last only for the open source screen.
+The maximum content rating starts at Safe, which also narrows tracker matching; relax it
+if a title cannot be found. Ito has three content levels, so the site's Erotica and
+Pornographic ratings both show as NSFW.
 
 ## Building
 
