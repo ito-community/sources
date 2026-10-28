@@ -13,7 +13,7 @@ dependencies = [
 
 [[package]]
 name = "atsumaru"
-version = "0.1.3"
+version = "0.2.0"
 dependencies = [
  "ito-rs",
  "serde",
@@ -78,8 +78,8 @@ dependencies = [
 
 [[package]]
 name = "ito-rs"
-version = "0.1.1"
-source = "git+https://github.com/itoapp/ito-rs#caacc7d9af14c5741c6082d98742e82b89600f72"
+version = "0.6.0"
+source = "git+https://github.com/itoapp/ito-rs?rev=03d7107fc0aa1622feed1cde10b93abd18eec3ba#03d7107fc0aa1622feed1cde10b93abd18eec3ba"
 dependencies = [
  "postcard",
  "serde",

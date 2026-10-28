@@ -17,7 +17,7 @@ https://ito-community.github.io/sources
 | Anikoto | anime | anikototv.to |
 | AnimeKai | anime | animekai.to |
 | Asura Scans | manga | asurascans.com |
-| Atsumaru | manga | atsu.moe |
+| Atsumaru | manga, novel | atsu.moe |
 | Comix | manga | comix.to |
 | HiAnime | anime | hianime.ms |
 | LuaComics | manga | luacomic.org |
@@ -28,6 +28,13 @@ https://ito-community.github.io/sources
 Comix requires Ito 1.4.0 or newer. It uses a verified version of the site's browser client;
 if the site changes that client, update the source package rather than bypassing its revision
 check. Site verification prompts still require user interaction.
+
+Atsumaru requires Ito 1.4.0 or newer. Its source settings choose content (comics, novels,
+origin types, maximum rating, blocked tags), search filters, Discover sections and how
+alternative scanlator versions of a chapter are listed. The maximum rating starts at Safe.
+Content settings and search filters also narrow the results used to match tracker entries,
+so relax them if a title can't be found. Ito has three content levels, so the site's Erotica
+and Pornographic ratings both show as NSFW.
 
 ## Building
 
