@@ -1,0 +1,17 @@
+[package]
+name = "templescan"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+opt-level = "s"
+
+[dependencies]
+ito-rs = { git = "https://github.com/AtiinLabs/ito-rs", rev = "af9d0bf22e2590053c76a9054331805e7e962ca9" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.150"
+scraper = { version = "0.24", default-features = false }

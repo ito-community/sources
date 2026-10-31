@@ -1,0 +1,15 @@
+{
+  "id": "com.kunihir0.rizzcomic",
+  "name": "RizzComic",
+  "version": "1.0.0",
+  "min_app_version": "1.4.0",
+  "url": "https://rizzfables.com",
+  "sourceUrl": "https://github.com/ito-community/sources",
+  "contentRating": 1,
+  "nsfw": 0,
+  "language": "en",
+  "languages": ["en"],
+  "type": "manga",
+  "author": "kunihir0",
+  "description": "Browse, filter and search the complete RizzFables comic catalog and read public chapters."
+}
