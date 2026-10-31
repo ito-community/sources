@@ -1,0 +1,15 @@
+{
+  "id": "com.kunihir0.thunderscans",
+  "name": "Thunder Scans",
+  "version": "1.0.0",
+  "min_app_version": "1.4.0",
+  "url": "https://en-thunderscans.com",
+  "sourceUrl": "https://github.com/ito-community/sources",
+  "contentRating": 0,
+  "nsfw": 0,
+  "language": "en",
+  "languages": ["en"],
+  "type": "manga",
+  "author": "kunihir0",
+  "description": "Browse, search and read English comics from Thunder Scans. Coin-locked chapters stay locked."
+}

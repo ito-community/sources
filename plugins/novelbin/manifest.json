@@ -1,0 +1,16 @@
+{
+  "id": "com.kunihir0.novelbin",
+  "name": "NovelBin",
+  "version": "1.0.0",
+  "min_app_version": "1.4.0",
+  "url": "https://novelbin.xyz",
+  "sourceUrl": "https://github.com/ito-community/sources",
+  "contentRating": 0,
+  "nsfw": 0,
+  "language": "en",
+  "languages": ["en"],
+  "type": "novel",
+  "kinds": ["novel"],
+  "author": "kunihir0",
+  "description": "Browse NovelBin's novel catalog, search it, and read chapter text with illustrations."
+}

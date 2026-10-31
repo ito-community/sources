@@ -1,0 +1,15 @@
+{
+  "id": "com.kunihir0.templescan",
+  "name": "Temple Scan",
+  "version": "1.0.0",
+  "min_app_version": "1.4.0",
+  "url": "https://templetoons.com",
+  "sourceUrl": "https://github.com/ito-community/sources",
+  "contentRating": 2,
+  "nsfw": 1,
+  "language": "en",
+  "languages": ["en"],
+  "type": "manga",
+  "author": "kunihir0",
+  "description": "Browse, search and read Temple Scan's public manhwa catalog. Premium early-access chapters are listed as locked and are not opened."
+}

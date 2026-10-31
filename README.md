@@ -19,11 +19,18 @@ https://ito-community.github.io/sources
 | Asura Scans | manga | asurascans.com |
 | Atsumaru | manga, novel | atsu.moe |
 | Comix | manga | comix.to |
+| FlameComics | manga, novel | flamecomics.xyz |
 | HiAnime | anime | hianime.ms |
 | LuaComics | manga | luacomic.org |
 | MangaFire | manga | mangafire.to |
+| ManhuaPlus | manga | manhuaplus.com |
 | Novel Fire | novel | novelfire.net |
+| NovelBin | novel | novelbin.xyz |
+| RizzComic | manga | rizzfables.com |
+| Temple Scan | manga | templetoons.com |
+| Thunder Scans | manga | en-thunderscans.com |
 | VioletScans | manga | violetmanga.com |
+| Vortex Scans | manga | vortexscans.org |
 
 Comix requires Ito 1.4.0 or newer. It uses a verified version of the site's browser client;
 if the site changes that client, update the source package rather than bypassing its revision
@@ -36,6 +43,11 @@ are saved; per-search filters on rich hosts last only for the open source screen
 The maximum content rating starts at Safe, which also narrows tracker matching; relax it
 if a title cannot be found. Ito has three content levels, so the site's Erotica and
 Pornographic ratings both show as NSFW.
+
+FlameComics, ManhuaPlus, NovelBin, RizzComic, Temple Scan, Thunder Scans and Vortex Scans
+require Ito 1.4.0 or newer. Paid and early-access chapters are not opened; they show as
+locked when the site marks them in its chapter list. Temple Scan loads through Ito's web
+view and may ask you to complete the site's verification.
 
 ## Building
 
