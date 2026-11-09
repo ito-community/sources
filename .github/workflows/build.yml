@@ -8,21 +8,32 @@ on:
       - "plugins/**"
       - "web/**"
       - ".github/workflows/build.yml"
+  # Pull requests build and verify against any base branch. They never deploy.
+  pull_request:
+  # Manual runs build and verify only; they never deploy.
+  workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
+
+env:
+  # The ito-pkg revision that packs the plugins, verifies the packages and builds the repository
+  # index: the strict-packaging release.
+  ITO_PKG_REV: 1be6c19e2e96199b09db5bff7b541774693185a5
+  # Optional. When set to an ABI number, `ito-pkg pack` (through its environment variable) and
+  # `ito-pkg verify` (through `--expect-abi`) fail for any plugin built for a different ABI.
+  # ITO_EXPECTED_ABI: "3"
 
 jobs:
   build:
-    permissions:
-      contents: write
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -30,6 +41,7 @@ jobs:
           node-version: 20
 
       - name: Setup Rust Toolchain
+        id: toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32-unknown-unknown
@@ -40,36 +52,78 @@ jobs:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+            plugins/*/target
+          key: ${{ runner.os }}-cargo-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('plugins/*/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-${{ steps.toolchain.outputs.cachekey }}-
+
+      - name: Cache ito-pkg
+        id: ito-pkg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/ito-pkg
+          key: ito-pkg-${{ runner.os }}-${{ env.ITO_PKG_REV }}
 
       - name: Install ito-pkg
+        if: steps.ito-pkg-cache.outputs.cache-hit != 'true'
         run: |
-          cargo install --git https://github.com/kunihir0/ito-pkg
+          set -euo pipefail
+          cargo install --git https://github.com/AtiinLabs/ito-pkg --rev "$ITO_PKG_REV" --locked
+
+      - name: Test Plugins
+        run: |
+          set -euo pipefail
+          for plugin in plugins/*/; do
+            # Archived plugins are still packed for existing installs, but are no longer maintained,
+            # so their host test builds are not part of the gate.
+            if jq -e '.archived == true' "$plugin/manifest.json" > /dev/null; then
+              echo "Skipping tests for archived plugin $plugin"
+              continue
+            fi
+            echo "::group::cargo test $plugin"
+            (cd "$plugin" && cargo test --locked)
+            echo "::endgroup::"
+          done
 
       - name: Build Plugins
         run: |
-          mkdir -p build/packages
-          for plugin in ./plugins/*; do
-            if [ -d "$plugin" ]; then
-              echo "Building $plugin..."
-              (
-                cd "$plugin"
-                ito-pkg pack
-              )
-              mv "$plugin"/*.ito build/packages/ || true
-            fi
+          set -euo pipefail
+          mkdir -p build/staging
+          for plugin in plugins/*/; do
+            plugin="${plugin%/}"
+            echo "::group::ito-pkg pack $plugin"
+            (cd "$plugin" && ito-pkg pack)
+            mv "$plugin"/*.ito build/staging/
+            echo "::endgroup::"
+          done
+
+      - name: Verify Packages
+        run: |
+          set -euo pipefail
+          for package in build/staging/*.ito; do
+            echo "::group::ito-pkg verify $package"
+            ito-pkg verify "$package" ${ITO_EXPECTED_ABI:+--expect-abi "$ITO_EXPECTED_ABI"}
+            echo "::endgroup::"
           done
 
       - name: Build Repository Index
         run: |
-          ito-pkg repo --input build/packages --output build --url "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}" --name "Ito Sources" --description "Community sourced and maintained plugins for Ito."
+          set -euo pipefail
+          # The indexer writes its own copies of the packages into the output directory, so it
+          # must read from a directory that is not inside that output.
+          ito-pkg repo \
+            --input build/staging \
+            --output build \
+            --url "https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}" \
+            --name "Ito Sources" \
+            --description "Community sourced and maintained plugins for Ito."
 
       - name: Build Website
         run: |
+          set -euo pipefail
           cd web
           if [ -f "package.json" ]; then
-            npm install
+            npm ci
             npm run build
           else
             echo "No package.json found in web/ directory. Skipping website build."
@@ -78,14 +132,42 @@ jobs:
 
       - name: Merge Outputs
         run: |
-          # Copy built repository files (index.json, packages/, icons/) to website dist folder
-          # Assuming Vue builds to web/dist
+          set -euo pipefail
+          # The indexer has copied the packages it indexed into build/packages; the staging
+          # directory must not be published.
+          rm -rf build/staging
+          # Copy built repository files (index.json, packages/, icons/) into the website output.
           mkdir -p web/dist
           cp -r build/* web/dist/
 
+      - name: Upload Site Artifact
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: site
+          path: web/dist
+          if-no-files-found: error
+
+  # Only pushes to main publish. Pull requests and manual runs stop after the build job.
+  deploy:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Site Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: site
+          path: web/dist
+
       - name: Deploy to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@v4
-        if: ${{ github.ref == 'refs/heads/main' }}
+        uses: JamesIves/github-pages-deploy-action@fa24774553152dd7873cd16ebd8d959b010c5445 # v4.9.0
         with:
           branch: gh-pages
           folder: web/dist
