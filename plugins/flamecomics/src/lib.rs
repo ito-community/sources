@@ -205,6 +205,7 @@ fn to_media(m: Manga, kind: MediaKind) -> MediaEntry {
             content_rating,
             nsfw: m.nsfw,
             chapters: m.chapters,
+            catalog: m.catalog,
         })
     } else {
         MediaEntry::Manga(m)
@@ -255,6 +256,7 @@ fn parse_entry(item: &Value) -> Result<CatalogEntry> {
         nsfw: 0,
         viewer: Viewer::Webtoon,
         chapters: None,
+        catalog: None,
     };
     Ok(CatalogEntry {
         manga,
@@ -309,25 +311,23 @@ fn parse_chapters(data: &Value, kind: MediaKind, id: &str) -> Result<Vec<Chapter
             .get("chapter")
             .and_then(numeric)
             .filter(|n| n.is_finite())
-            .ok_or_else(malformed)? as f32;
+            .ok_or_else(malformed)?;
         let title = string(value, "title")
             .map(|t| format!("Chapter {number} — {t}"))
             .unwrap_or_else(|| format!("Chapter {number}"));
+        let content_kind = if kind == MediaKind::Novel {
+            ContentKind::Text
+        } else {
+            ContentKind::Images
+        };
         chapters.push(Chapter {
-            key: key.clone(),
             title: Some(title),
-            volume: None,
             chapter: Some(number),
             date_updated: value.get("release_date").and_then(numeric),
-            scanlator: None,
             url: Some(format!("{ORIGIN}/{}/{id}/{key}", route(kind))),
             lang: Some("en".into()),
             paywalled: chapter_paywall(value),
-            kind: if kind == MediaKind::Novel {
-                ContentKind::Text
-            } else {
-                ContentKind::Images
-            },
+            ..Chapter::new(key, content_kind)
         });
     }
     chapters.sort_by(|a, b| {
@@ -923,7 +923,15 @@ mod tests {
             {"token":"bbbbbbbbbbbbbbbb","chapter":"0.00","title":"Prologue","price":"0.00"},
             {"token":"aaaaaaaaaaaaaaaa","chapter":"12.50"}]});
         let chapters = parse_chapters(&data, MediaKind::Novel, "5").expect("chapters");
+        ito_rs::catalog::validate_chapters(&chapters).expect("SDK accepts the chapter list");
         assert_eq!(chapters.len(), 2);
+        assert_eq!(
+            chapters
+                .iter()
+                .map(|chapter| chapter.key.as_str())
+                .collect::<Vec<_>>(),
+            ["bbbbbbbbbbbbbbbb", "aaaaaaaaaaaaaaaa"]
+        );
         assert_eq!(chapters[0].chapter, Some(0.0));
         assert_eq!(chapters[1].chapter, Some(12.5));
         assert_eq!(chapters[1].paywalled, None);
