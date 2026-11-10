@@ -69,8 +69,8 @@ dependencies = [
 
 [[package]]
 name = "ito-rs"
-version = "0.1.1"
-source = "git+https://github.com/itoapp/ito-rs#caacc7d9af14c5741c6082d98742e82b89600f72"
+version = "0.8.0"
+source = "git+https://github.com/AtiinLabs/ito-rs?rev=213ccaa26b7d7c3bc68f5399ba12ef8414f187a9#213ccaa26b7d7c3bc68f5399ba12ef8414f187a9"
 dependencies = [
  "postcard",
  "serde",
@@ -95,7 +95,7 @@ dependencies = [
 
 [[package]]
 name = "luacomics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ito-rs",
  "postcard",
