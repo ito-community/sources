@@ -15,7 +15,6 @@ https://ito-community.github.io/sources
 | Plugin | Type | Site |
 |---|---|---|
 | Anikoto | anime | anikototv.to |
-| AnimeKai | anime | animekai.to |
 | Asura Scans | manga | asurascans.com |
 | Atsumaru | manga, novel | atsu.moe |
 | Comix | manga | comix.to |
