@@ -33,6 +33,7 @@ impl Listed {
             // Every series is a vertical strip.
             viewer: Viewer::Webtoon,
             chapters: None,
+            catalog: None,
         }
     }
 }
