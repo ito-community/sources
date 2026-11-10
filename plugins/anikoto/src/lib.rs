@@ -17,6 +17,46 @@ pub struct AnikotoProvider;
 
 const BASE_URL: &str = "https://anikototv.to";
 
+fn episode_from_row(
+    data_num: String,
+    data_slug: impl FnOnce() -> String,
+    href: impl FnOnce() -> String,
+    mal_id: impl FnOnce() -> String,
+    data_ids: impl FnOnce() -> String,
+    title: impl FnOnce() -> Option<String>,
+) -> Option<Episode> {
+    let mut number = data_num;
+    if number.is_empty() {
+        number = data_slug();
+    }
+    let href = href();
+    if number.is_empty() && href.contains("/ep-") {
+        if let Some(slug) = href.split("/ep-").last() {
+            number = slug.to_string();
+        }
+    }
+    if number.is_empty() {
+        return None;
+    }
+    let episode = number.parse::<f32>().ok();
+    let data_ids = data_ids();
+    let key = if data_ids.is_empty() {
+        format!("{}:{}", mal_id(), number)
+    } else {
+        data_ids
+    };
+    let title = title().unwrap_or_else(|| format!("Episode {number}"));
+    Some(Episode {
+        key,
+        title: Some(title.trim().to_string()),
+        episode,
+        date_updated: None,
+        url: Some(href),
+        lang: None,
+        paywalled: None,
+    })
+}
+
 impl AnikotoProvider {
     fn url_encode(text: &str) -> String {
         let mut encoded = String::new();
@@ -271,47 +311,20 @@ impl AnimeProvider for AnikotoProvider {
                 
                 let mut episodes = Vec::new();
                 for node in nodes {
-                    let mut ep_num_str = node.attr("data-num").unwrap_or_default().unwrap_or_default();
-                    if ep_num_str.is_empty() {
-                        ep_num_str = node.attr("data-slug").unwrap_or_default().unwrap_or_default();
+                    if let Some(episode) = episode_from_row(
+                        node.attr("data-num").unwrap_or_default().unwrap_or_default(),
+                        || node.attr("data-slug").unwrap_or_default().unwrap_or_default(),
+                        || node.attr("href").unwrap_or_default().unwrap_or_default(),
+                        || node.attr("data-mal").unwrap_or_default().unwrap_or_default(),
+                        || node.attr("data-ids").unwrap_or_default().unwrap_or_default(),
+                        || {
+                            node.select(".d-title")
+                                .ok()
+                                .and_then(|n| n.first().map(|s| s.text().unwrap_or_default()))
+                        },
+                    ) {
+                        episodes.push(episode);
                     }
-                    
-                    let href = node.attr("href").unwrap_or_default().unwrap_or_default();
-                    if ep_num_str.is_empty() && href.contains("/ep-") {
-                        if let Some(slug) = href.split("/ep-").last() {
-                            ep_num_str = slug.to_string();
-                        }
-                    }
-
-                    let mal_id = node.attr("data-mal").unwrap_or_default().unwrap_or_default();
-                    
-                    if ep_num_str.is_empty() {
-                        ito_rs::host::print(&format!("Skipping node without ep_num: href='{}'", href));
-                        continue;
-                    }
-                    
-                    let ep_num = ep_num_str.parse::<f32>().ok();
-                    let data_ids = node.attr("data-ids").unwrap_or_default().unwrap_or_default();
-                    let key = if !data_ids.is_empty() {
-                        data_ids
-                    } else {
-                        format!("{}:{}", mal_id, ep_num_str)
-                    };
-                    
-                    let title = node.select(".d-title")
-                        .ok()
-                        .and_then(|n| n.first().map(|s| s.text().unwrap_or_default()))
-                        .unwrap_or_else(|| format!("Episode {}", ep_num_str));
-
-                    episodes.push(Episode {
-                        key,
-                        title: Some(title.trim().to_string()),
-                        episode: ep_num,
-                        date_updated: None,
-                        url: Some(href),
-                        lang: None,
-                        paywalled: None,
-                    });
                 }
                 ito_rs::host::print(&format!("Found {} episodes.", episodes.len()));
                 if episodes.is_empty() {
@@ -423,4 +436,36 @@ impl AnimeProvider for AnikotoProvider {
     }
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Representative row attributes exercise the mapper, not host-backed DOM extraction;
+    /// native tests use these values because the SDK's HTML handle requires host imports.
+    #[test]
+    fn episode_keys_are_pinned_for_the_episode_list_rows() {
+        let rows = [
+            ("1", "", "/watch/series-aa1/ep-1", "500", "11111"),
+            ("2", "", "/watch/series-aa1/ep-2", "500", ""),
+            ("", "", "/watch/series-aa1/ep-3", "500", ""),
+            ("", "", "/watch/series-aa1", "500", "22222"),
+        ];
+        let keys: Vec<String> = rows
+            .into_iter()
+            .filter_map(|(data_num, data_slug, href, mal_id, data_ids)| {
+                episode_from_row(
+                    data_num.to_string(),
+                    move || data_slug.to_string(),
+                    move || href.to_string(),
+                    move || mal_id.to_string(),
+                    move || data_ids.to_string(),
+                    || None,
+                )
+            })
+            .map(|episode| episode.key)
+            .collect();
+        assert_eq!(keys, ["11111", "500:2", "500:3"]);
+    }
+}
 export_anime_plugin!(AnikotoProvider);
