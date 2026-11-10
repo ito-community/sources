@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use ito_rs::catalog::{MAX_SCANLATOR_NAME_BYTES, MAX_TITLE_BYTES};
 use ito_rs::models::manga::{self, ContentRating, Manga, Viewer};
 use ito_rs::models::novel::{self, Novel};
 use ito_rs::models::{
@@ -207,6 +208,7 @@ impl Listed {
                 nsfw: nsfw(&self.rating),
                 content_rating: novel_rating(self.rating),
                 chapters: None,
+                catalog: None,
             })
         } else {
             MediaEntry::Manga(Manga {
@@ -223,6 +225,7 @@ impl Listed {
                 content_rating: self.rating,
                 viewer: viewer(self.origin.as_deref()),
                 chapters: None,
+                catalog: None,
             })
         }
     }
@@ -537,17 +540,16 @@ fn update(mut entry: MediaEntry, details: bool, units: bool) -> Result<MediaEntr
     let novel = is_novel(series.medium.as_deref());
     let preferences = Preferences::load();
 
-    let chapters = if units {
+    let chapter_list = if units {
         let list: ChapterListResponse = get_json(&format!(
             "{API}/manga/allChapters?mangaId={}",
             query::encode(&key)
         ))?;
-        Some(
-            chapters::select(list.chapters, &series.scanlators, &preferences.chapters)
-                .into_iter()
-                .map(|item| chapter(item, &key, &series.scanlators, novel))
-                .collect::<Vec<_>>(),
-        )
+        let chapters = chapters::select(list.chapters, &series.scanlators, &preferences.chapters)
+            .into_iter()
+            .map(|item| chapter(item, &key, &series.scanlators, novel))
+            .collect::<Vec<_>>();
+        Some((chapters, chapters::catalog(&preferences.chapters)))
     } else {
         None
     };
@@ -580,8 +582,9 @@ fn update(mut entry: MediaEntry, details: bool, units: bool) -> Result<MediaEntr
                 manga.artist = details.artist;
                 manga.tags = details.tags;
             }
-            if chapters.is_some() {
-                manga.chapters = chapters;
+            if let Some((chapters, catalog)) = chapter_list {
+                manga.chapters = Some(chapters);
+                manga.catalog = Some(catalog);
             }
         }
         MediaEntry::Novel(novel) => {
@@ -597,8 +600,9 @@ fn update(mut entry: MediaEntry, details: bool, units: bool) -> Result<MediaEntr
                 novel.artist = details.artist;
                 novel.tags = details.tags;
             }
-            if chapters.is_some() {
-                novel.chapters = chapters;
+            if let Some((chapters, catalog)) = chapter_list {
+                novel.chapters = Some(chapters);
+                novel.catalog = Some(catalog);
             }
         }
         MediaEntry::Anime(_) => return Err(Error::Unsupported),
@@ -660,28 +664,30 @@ impl Details {
 }
 
 fn chapter(item: ChapterItem, series: &str, groups: &[Scanlator], novel: bool) -> Chapter {
-    let scanlator = item.scanlation_manga_id.as_deref().and_then(|id| {
-        groups
-            .iter()
-            .find(|group| group.id == id)
-            .map(|group| group.name.clone())
-    });
+    // Group ids on a series page are scoped to that series: one group has a different id on
+    // every series, so only its display name identifies it. Names outside the SDK's limits are
+    // left unnamed rather than failing the whole list.
+    let scanlator = item
+        .scanlation_manga_id
+        .as_deref()
+        .and_then(|id| groups.iter().find(|group| group.id == id))
+        .filter(|group| (1..=MAX_SCANLATOR_NAME_BYTES).contains(&group.name.len()))
+        .map(|group| ito_rs::models::Scanlator::named(group.name.clone()));
+    let kind = if novel {
+        ContentKind::Text
+    } else {
+        ContentKind::Images
+    };
     Chapter {
         url: Some(links::chapter_url(series, &item.id, novel)),
-        key: item.id,
-        title: item.title.filter(|title| !title.trim().is_empty()),
-        volume: None,
-        // The app stores chapter numbers as f32.
-        chapter: item.number.map(|number| number as f32),
+        title: item
+            .title
+            .filter(|title| !title.trim().is_empty() && title.len() <= MAX_TITLE_BYTES),
+        chapter: item.number,
         date_updated: item.created_at.map(|millis| millis as f64 / 1000.0),
         scanlator,
         lang: Some("en".into()),
-        paywalled: None,
-        kind: if novel {
-            ContentKind::Text
-        } else {
-            ContentKind::Images
-        },
+        ..Chapter::new(item.id, kind)
     }
 }
 
@@ -993,11 +999,127 @@ mod tests {
         assert_eq!(novel.url.as_deref(), Some("https://atsu.moe/novel/s/c%202"));
         assert_eq!(novel.chapter, Some(10.5));
         assert_eq!(novel.title, None);
-        assert_eq!(novel.scanlator.as_deref(), Some("Group"));
+        assert_eq!(
+            novel.scanlator,
+            Some(ito_rs::models::Scanlator::named("Group"))
+        );
         assert_eq!(novel.date_updated, Some(1_700_000_000.0));
         let comic = chapter(item, "s", &groups, false);
         assert_eq!(comic.kind, ContentKind::Images);
         assert_eq!(comic.url.as_deref(), Some("https://atsu.moe/read/s/c%202"));
+    }
+
+    #[test]
+    fn group_and_title_lengths_follow_the_sdk_limits() {
+        let item = |title: Option<String>| ChapterItem {
+            id: "c".into(),
+            scanlation_manga_id: Some("g".into()),
+            number: Some(1.0),
+            title,
+            created_at: None,
+            page_count: None,
+        };
+        let named = |name: &str| {
+            let group = Scanlator {
+                id: "g".into(),
+                name: name.into(),
+                score: None,
+            };
+            chapter(item(None), "s", &[group], false).scanlator
+        };
+        assert_eq!(named(""), None);
+        assert_eq!(
+            named(&"x".repeat(256)),
+            Some(ito_rs::models::Scanlator::named("x".repeat(256)))
+        );
+        assert_eq!(named(&"x".repeat(257)), None);
+        let titled = |title: String| chapter(item(Some(title)), "s", &[], false).title;
+        assert_eq!(titled("t".repeat(1024)), Some("t".repeat(1024)));
+        assert_eq!(titled("t".repeat(1025)), None);
+    }
+
+    #[test]
+    fn saved_chapter_lists_pass_sdk_validation() {
+        let series = decode::<SeriesResponse>(200, SERIES_PAGE.as_bytes()).expect("series page");
+        let list =
+            decode::<ChapterListResponse>(200, CHAPTER_LIST.as_bytes()).expect("chapter list");
+        for alternatives in [
+            settings::Alternatives::ShowAll,
+            settings::Alternatives::HighestVoted,
+        ] {
+            let preferences = settings::ChapterPreferences {
+                hidden_scanlators: Vec::new(),
+                preferred_scanlators: Vec::new(),
+                alternatives,
+            };
+            let chapters: Vec<Chapter> = chapters::select(
+                list.chapters.clone(),
+                &series.manga_page.scanlators,
+                &preferences,
+            )
+            .into_iter()
+            .map(|item| chapter(item, "2VgNt", &series.manga_page.scanlators, false))
+            .collect();
+            ito_rs::catalog::validate_chapters(&chapters).expect("chapter list is valid");
+        }
+    }
+
+    const SERIES_PAGE: &str = r#"{"mangaPage":{"id":"2VgNt","scanlators":[
+  {"id": "cmm95e2pq001a0gp2lb5dv0uq", "name": "Gamma", "score": 9},
+  {"id": "cmrsjj6s100002eqvm319u8nr", "name": "Thunder", "score": -9},
+  {"id": "cmgzkynrz5nvxm191t8wd2zk5", "name": "Alpha", "score": 51}
+]}}"#;
+
+    const CHAPTER_LIST: &str = r#"{"chapters":[
+  {"id": "prIIkU", "scanlationMangaId": "cmrsjj6s100002eqvm319u8nr", "number": 99, "title": "Chapter 99", "createdAt": 1788464782000, "pageCount": 17},
+  {"id": "BPtAZy", "scanlationMangaId": "cmm95e2pq001a0gp2lb5dv0uq", "number": 99, "title": "Chapter 99", "createdAt": 1788489782074, "pageCount": 17},
+  {"id": "SvDQF", "scanlationMangaId": "cmgzkynrz5nvxm191t8wd2zk5", "number": 99, "title": "Chapter 99", "createdAt": 1788912605804, "pageCount": 17},
+  {"id": "CEWMEo", "scanlationMangaId": "cmrsjj6s100002eqvm319u8nr", "number": 98, "title": "Chapter 98", "createdAt": 1787322536369, "pageCount": 13},
+  {"id": "MjnOZ2", "scanlationMangaId": "cmm95e2pq001a0gp2lb5dv0uq", "number": 98, "title": "Chapter 98", "createdAt": 1788489785990, "pageCount": 10},
+  {"id": "1WJ3r", "scanlationMangaId": "cmgzkynrz5nvxm191t8wd2zk5", "number": 98, "title": "Chapter 98", "createdAt": 1786003615926, "pageCount": 10},
+  {"id": "Jbss6Q", "scanlationMangaId": "cmrsjj6s100002eqvm319u8nr", "number": 93.2, "title": "Chapter 93.2", "createdAt": 1784516210347, "pageCount": 14},
+  {"id": "kX7vfh", "scanlationMangaId": "cmm95e2pq001a0gp2lb5dv0uq", "number": 93.2, "title": "Chapter 93.2", "createdAt": 1772455173385, "pageCount": 14},
+  {"id": "4PrwX-", "scanlationMangaId": "cmrsjj6s100002eqvm319u8nr", "number": 93.1, "title": "Chapter 93.1", "createdAt": 1784516225476, "pageCount": 14},
+  {"id": "m0mCWe", "scanlationMangaId": "cmm95e2pq001a0gp2lb5dv0uq", "number": 93.1, "title": "Chapter 93.1", "createdAt": 1772455168452, "pageCount": 14},
+  {"id": "j9CWYL", "scanlationMangaId": "cmrsjj6s100002eqvm319u8nr", "number": 1, "title": "Chapter 1", "createdAt": 1784515204929, "pageCount": 66},
+  {"id": "vJly4Skj", "scanlationMangaId": "cmgzkynrz5nvxm191t8wd2zk5", "number": 1, "title": "Chapter 1", "createdAt": 1750510722753, "pageCount": 66},
+  {"id": "mzO0tF", "scanlationMangaId": "cmm95e2pq001a0gp2lb5dv0uq", "number": 1, "title": "Chapter 1", "createdAt": 1772454072146, "pageCount": 66},
+  {"id": "0S_52R", "scanlationMangaId": "cmrsjj6s100002eqvm319u8nr", "number": 0, "title": "Chapter 0", "createdAt": 1784515474040, "pageCount": 20}
+]}"#;
+
+    /// Keys identify uploads across refreshes, so the keys a saved page produces are pinned
+    /// under show-all and under a collapsing preference.
+    #[test]
+    fn chapter_keys_are_stable() {
+        let series = decode::<SeriesResponse>(200, SERIES_PAGE.as_bytes()).expect("series page");
+        let list =
+            decode::<ChapterListResponse>(200, CHAPTER_LIST.as_bytes()).expect("chapter list");
+        let keys = |alternatives| {
+            let preferences = settings::ChapterPreferences {
+                hidden_scanlators: Vec::new(),
+                preferred_scanlators: Vec::new(),
+                alternatives,
+            };
+            chapters::select(
+                list.chapters.clone(),
+                &series.manga_page.scanlators,
+                &preferences,
+            )
+            .into_iter()
+            .map(|item| chapter(item, "2VgNt", &series.manga_page.scanlators, false).key)
+            .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            keys(settings::Alternatives::ShowAll),
+            [
+                "prIIkU", "BPtAZy", "SvDQF", "CEWMEo", "MjnOZ2", "1WJ3r", "Jbss6Q", "kX7vfh",
+                "4PrwX-", "m0mCWe", "j9CWYL", "vJly4Skj", "mzO0tF", "0S_52R",
+            ]
+        );
+        assert_eq!(
+            keys(settings::Alternatives::HighestVoted),
+            ["SvDQF", "1WJ3r", "kX7vfh", "m0mCWe", "vJly4Skj", "0S_52R"]
+        );
     }
 
     #[test]
