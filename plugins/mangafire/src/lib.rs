@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use ito_rs::export_manga_plugin;
 use ito_rs::provider::MangaProvider;
-use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, Setting, SettingsSchema, LinkValue};
+use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, Setting, SettingsSchema, LinkValue, ContentKind};
 use ito_rs::models::manga::{Manga, Chapter, PageResult, Status, ContentRating, Viewer};
 use ito_rs::net::Request;
 use ito_rs::Result;
@@ -66,7 +66,7 @@ struct ApiEntity {
 #[derive(Deserialize)]
 struct ApiChapter {
     id: i32,
-    number: f32,
+    number: f64,
     name: Option<String>,
 }
 
@@ -168,6 +168,7 @@ fn manga_from_api(item: ApiManga) -> Manga {
         nsfw: 0,
         viewer: Viewer::Default,
         chapters: None,
+        catalog: None,
     }
 }
 
@@ -208,6 +209,25 @@ fn strip_tags(html: &str) -> String {
         }
     }
     out.trim().to_string()
+}
+
+/// Maps one language's chapter page into the destination, keeping the site's order.
+fn append_chapters_from_api(
+    chapters: &mut Vec<Chapter>,
+    hid: &str,
+    lang: &str,
+    items: Vec<ApiChapter>,
+) {
+    for item in items {
+        let title = item.name.filter(|n| !n.is_empty());
+        chapters.push(Chapter {
+            title,
+            chapter: Some(item.number),
+            url: Some(format!("{}/title/{}/chapter/{}", BASE_URL, hid, item.id)),
+            lang: Some(lang.to_string()),
+            ..Chapter::new(item.id.to_string(), ContentKind::Images)
+        });
+    }
 }
 
 impl MangaFire {
@@ -273,11 +293,8 @@ impl MangaProvider for MangaFire {
             nsfw: 0,
             viewer: Viewer::Default,
             chapters: None,
+            catalog: None,
         }))
-    }
-
-    fn get_home_stream() -> Result<bool> {
-        Ok(false)
     }
 
     fn get_home() -> Result<HomeLayout> {
@@ -375,20 +392,7 @@ impl MangaProvider for MangaFire {
                     )?;
                     let has_next = response.meta.as_ref().map(|m| m.has_next).unwrap_or(false);
                     let done = response.items.is_empty() || !has_next;
-                    for item in response.items {
-                        let title = item.name.filter(|n| !n.is_empty());
-                        chapters.push(Chapter {
-                            key: item.id.to_string(),
-                            title,
-                            volume: None,
-                            chapter: Some(item.number),
-                            date_updated: None,
-                            scanlator: None,
-                            url: Some(format!("{}/title/{}/chapter/{}", BASE_URL, hid, item.id)),
-                            lang: Some(lang.clone()),
-                            paywalled: None,
-                        });
-                    }
+                    append_chapters_from_api(&mut chapters, &hid, &lang, response.items);
                     if done {
                         break;
                     }
@@ -420,3 +424,22 @@ impl MangaProvider for MangaFire {
 }
 
 export_manga_plugin!(MangaFire);
+
+#[cfg(test)]
+mod tests {
+    use super::{ApiChapter, ApiResponse, append_chapters_from_api};
+
+    // A chapter list page saved from the site's English listing (first three entries, the
+    // paging metadata kept). It holds public chapter data only.
+    const CHAPTERS_EN: &str = r#"{"items":[{"id":8537216,"number":3,"name":"","language":"en","type":"unofficial","createdAt":1783487239},{"id":8537215,"number":1.1,"name":"Prologue","language":"en","type":"unofficial","createdAt":1783487239},{"id":8537217,"number":0,"name":"Prologue","language":"en","type":"unofficial","createdAt":1783487239}],"meta":{"total":3,"perPage":20,"page":1,"lastPage":1,"from":1,"to":3,"hasNext":false,"hasPrev":false}}"#;
+
+    #[test]
+    fn chapter_keys_are_the_site_ids_in_site_order() {
+        let response: ApiResponse<ApiChapter> =
+            serde_json::from_str(CHAPTERS_EN).expect("saved chapter page parses");
+        let mut chapters = Vec::new();
+        append_chapters_from_api(&mut chapters, "pwpz9", "en", response.items);
+        let keys: Vec<&str> = chapters.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["8537216", "8537215", "8537217"]);
+    }
+}
