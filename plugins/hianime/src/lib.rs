@@ -125,7 +125,7 @@ fn anime_list<N: Transport>(net: &N, listing: &Listing, page: i32) -> Result<Pag
     Ok(listing_page(&html)?)
 }
 
-fn search<N: Transport>(net: &N, query: &str, page: i32) -> Result<PageResult, Failure> {
+fn search_results<N: Transport>(net: &N, query: &str, page: i32) -> Result<PageResult, Failure> {
     let html = fetch_html(
         net,
         &format!(
@@ -254,7 +254,7 @@ impl AnimeProvider for HiAnimeProvider {
         page: i32,
         _filters: Vec<FilterItem>,
     ) -> ito_rs::Result<PageResult> {
-        search(&HostNet, query, page).map_err(Error::from)
+        search_results(&HostNet, query, page).map_err(Error::from)
     }
 
     fn get_anime_update(
@@ -528,7 +528,7 @@ mod tests {
             200,
             r#"<main><div class="hk-empty"><h1>Nothing found for "zzzz"</h1></div></main>"#,
         );
-        let page = search(&net, "zzzz", 1).expect("empty page");
+        let page = search_results(&net, "zzzz", 1).expect("empty page");
         assert!(page.entries.is_empty());
         assert!(!page.has_next_page);
     }
@@ -540,7 +540,7 @@ mod tests {
             200,
             "<h1><span>0</span> found</h1>",
         );
-        let page = search(&net, "nothing", 1).expect("empty page");
+        let page = search_results(&net, "nothing", 1).expect("empty page");
         assert!(page.entries.is_empty());
         assert!(!page.has_next_page);
     }
@@ -552,7 +552,7 @@ mod tests {
             200,
             "<h1><span>58</span> found</h1>",
         );
-        let Err(failure) = search(&net, "one piece", 1) else {
+        let Err(failure) = search_results(&net, "one piece", 1) else {
             panic!("expected an error");
         };
         assert!(matches!(failure, Failure::Other(Error::Html(_))));
@@ -626,5 +626,36 @@ mod tests {
         let anime = anime_update(&net, anime, true, true).expect("update");
         assert_eq!(anime.episodes.map(|episodes| episodes.len()), Some(0));
         assert!(matches!(anime.status, Status::Unknown));
+    }
+
+    /// Synthetic trimmed details markup: the canned update/parser path is tested, not captured site data.
+    const EPISODE_LIST_PAGE: &str = r#"<main>
+<section id="hk-episodes" class="hk-eps">
+  <div class="hk-eps__range" data-range="1-3"><button data-hk-range="1">1-3</button></div>
+  <a class="hk-ep" href="/watch-show-one-episode-1-abcde" data-ep="1" data-name="Pilot"><span class="hk-ep__num">1</span></a>
+  <a class="hk-ep" href="/watch-show-one-episode-2-abcde" data-ep="2" data-name="Second"><span class="hk-ep__num">2</span></a>
+  <a class="hk-ep" href="/watch-show-one-episode-3-abcde" data-ep="3" data-name="Third"><span class="hk-ep__num">3</span></a>
+</section>
+</main>"#;
+
+    #[test]
+    fn episode_keys_are_pinned_for_the_episode_list_fixture() {
+        let net = Canned::new().on(&format!("{BASE_URL}{SHOW_KEY}"), 200, EPISODE_LIST_PAGE);
+        let anime = parse::anime(SHOW_KEY.to_string(), "Show One".to_string(), None);
+        let anime = anime_update(&net, anime, false, true).expect("update");
+        let keys: Vec<String> = anime
+            .episodes
+            .expect("episodes")
+            .into_iter()
+            .map(|episode| episode.key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "/watch-show-one-episode-1-abcde",
+                "/watch-show-one-episode-2-abcde",
+                "/watch-show-one-episode-3-abcde",
+            ]
+        );
     }
 }
