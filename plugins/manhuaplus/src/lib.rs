@@ -151,6 +151,7 @@ fn manga(path: &str, title: String, cover: Option<String>) -> Manga {
         nsfw: 0,
         viewer: Viewer::Webtoon,
         chapters: None,
+        catalog: None,
     }
 }
 fn entries(root: &Html) -> Result<Vec<MediaEntry>> {
@@ -242,7 +243,7 @@ fn listing_path(page: i32, query: Option<&str>) -> Result<String> {
         None => format!("/manga/page/{page}/"),
     })
 }
-fn chapter_number(label: &str, path: &str) -> Option<f32> {
+fn chapter_number(label: &str, path: &str) -> Option<f64> {
     let lower = label.to_ascii_lowercase();
     let rest = lower
         .find("chapter")
@@ -251,7 +252,7 @@ fn chapter_number(label: &str, path: &str) -> Option<f32> {
         let end = s
             .find(|c: char| !c.is_ascii_digit() && c != '.')
             .unwrap_or(s.len());
-        s[..end].parse::<f32>().ok()
+        s[..end].parse::<f64>().ok()
     });
     from_label
         .or_else(|| {
@@ -262,7 +263,7 @@ fn chapter_number(label: &str, path: &str) -> Option<f32> {
                 .parse()
                 .ok()
         })
-        .filter(|n| n.is_finite() && *n >= 0.0)
+        .filter(|n| n.is_finite() && *n >= 0.0 && *n <= ito_rs::catalog::MAX_ABS_NUMBER)
 }
 fn chapters(root: &Html) -> Result<Vec<Chapter>> {
     let mut chapters = Vec::new();
@@ -289,16 +290,12 @@ fn chapters(root: &Html) -> Result<Vec<Chapter>> {
                 .any(|c| matches!(c, "locked" | "chapter-locked"))
             || row.value().attr("data-locked") == Some("true");
         chapters.push(Chapter {
-            key: path.clone(),
             title: Some(title.clone()),
-            volume: None,
             chapter: chapter_number(&title, &path),
-            date_updated: None,
-            scanlator: None,
             url: Some(format!("{ORIGIN}{path}")),
             lang: Some("en".into()),
             paywalled: Some(locked),
-            kind: ContentKind::Images,
+            ..Chapter::new(path.clone(), ContentKind::Images)
         });
     }
     if chapters.is_empty() {
@@ -595,6 +592,24 @@ mod tests {
         assert_eq!(rows[0].paywalled, Some(true));
         assert_eq!(rows[1].paywalled, Some(false));
         assert_eq!(chapter_number("Chapter 0.5: Opening", "/bad"), Some(0.5));
+    }
+    #[test]
+    fn chapter_keys_are_frozen() {
+        let root = Html::parse_document(include_str!("../tests/fixtures/chapter_list.html"));
+        let keys = chapters(&root)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.key)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            [
+                "/manga/i-am-the-fated-villain/chapter-366/",
+                "/manga/i-am-the-fated-villain/chapter-367/",
+                "/manga/i-am-the-fated-villain/chapter-368/",
+                "/manga/i-am-the-fated-villain/chapter-369/",
+            ]
+        );
     }
     #[test]
     fn reader_accepts_cdn_despite_text_wrapper_and_excludes_ads() {
