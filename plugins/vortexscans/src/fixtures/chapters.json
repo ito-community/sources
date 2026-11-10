@@ -1,0 +1,43 @@
+{
+  "post": {
+    "chapters": [
+      {
+        "slug": "chapter-1",
+        "number": 1,
+        "title": "",
+        "isLocked": false,
+        "isPermanentlyLocked": false,
+        "isShortLinkLocked": false,
+        "isAccessible": true
+      },
+      {
+        "slug": "chapter-2",
+        "number": 2,
+        "title": "",
+        "isLocked": false,
+        "isPermanentlyLocked": false,
+        "isShortLinkLocked": false,
+        "isAccessible": true
+      },
+      {
+        "slug": "chapter-47",
+        "number": 47,
+        "title": "",
+        "isLocked": false,
+        "isPermanentlyLocked": false,
+        "isShortLinkLocked": false,
+        "isAccessible": true
+      },
+      {
+        "slug": "chapter-48",
+        "number": 48,
+        "title": "",
+        "isLocked": true,
+        "isPermanentlyLocked": true,
+        "isShortLinkLocked": false,
+        "isAccessible": false
+      }
+    ]
+  },
+  "totalChapterCount": 4
+}

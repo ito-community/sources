@@ -3,7 +3,7 @@ use ito_rs::models::manga::{ContentRating, Manga, Status, Viewer};
 use ito_rs::models::{
     Chapter, ContentKind, FilterItem, HomeComponent, HomeComponentValue, HomeLayout, LinkValue,
     Listing, MediaEntry, MediaKind, MediaPageResult, Page, PageContent, PluginImageRequest,
-    Setting, SettingsSchema,
+    Scanlator, Setting, SettingsSchema,
 };
 use ito_rs::net::Request;
 use ito_rs::provider::SourceProvider;
@@ -211,6 +211,7 @@ fn manga(v: &Value) -> Result<Manga> {
         nsfw: i32::from(adult),
         viewer: Viewer::Webtoon,
         chapters: None,
+        catalog: None,
     })
 }
 fn locked(v: &Value) -> bool {
@@ -231,16 +232,15 @@ fn chapter(v: &Value, slug: &str) -> Result<Chapter> {
         return Err(invalid());
     }
     Ok(Chapter {
-        key: key.into(),
         title: string(v, "title"),
         volume: None,
-        chapter: Some(number as f32),
+        chapter: Some(number),
         date_updated: None,
-        scanlator: Some("Vortex Scans".into()),
+        scanlator: Some(Scanlator::named("Vortex Scans")),
         url: Some(path_url(slug, Some(key))?),
         lang: Some("en".into()),
         paywalled: Some(locked(v)),
-        kind: ContentKind::Images,
+        ..Chapter::new(key, ContentKind::Images)
     })
 }
 fn chapters(value: &Value, slug: &str) -> Result<Vec<Chapter>> {
@@ -616,6 +616,16 @@ mod tests {
         let mut truncated = data;
         truncated["totalChapterCount"] = 4.into();
         assert!(chapters(&truncated, "synthetic").is_err());
+    }
+    #[test]
+    fn saved_series_page_yields_the_pinned_chapter_keys() {
+        let value: Value =
+            serde_json::from_str(include_str!("fixtures/chapters.json")).expect("fixture");
+        let list = chapters(&value, "bill-the-blacksmith").expect("chapters");
+        assert_eq!(
+            list.iter().map(|c| c.key.as_str()).collect::<Vec<_>>(),
+            vec!["chapter-1", "chapter-2", "chapter-47", "chapter-48"]
+        );
     }
     #[test]
     fn reader_orders_public_pages_and_refuses_locked_data() {

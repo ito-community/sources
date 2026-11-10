@@ -193,8 +193,8 @@ dependencies = [
 
 [[package]]
 name = "ito-rs"
-version = "0.7.0"
-source = "git+https://github.com/AtiinLabs/ito-rs?rev=af9d0bf22e2590053c76a9054331805e7e962ca9#af9d0bf22e2590053c76a9054331805e7e962ca9"
+version = "0.8.0"
+source = "git+https://github.com/AtiinLabs/ito-rs?rev=213ccaa26b7d7c3bc68f5399ba12ef8414f187a9#213ccaa26b7d7c3bc68f5399ba12ef8414f187a9"
 dependencies = [
  "postcard",
  "serde",
@@ -468,7 +468,7 @@ checksum = "3a3b425286980a367278453f3b6d28cdcb134b574e5a35824a6ff5eebad50bb6"
 
 [[package]]
 name = "vortexscans"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ito-rs",
  "serde_json",
