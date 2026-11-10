@@ -1,8 +1,8 @@
 {
   "id": "com.kunihir0.flamecomics",
   "name": "FlameComics",
-  "version": "1.0.0",
-  "min_app_version": "1.4.0",
+  "version": "1.1.0",
+  "min_app_version": "1.5.0",
   "url": "https://flamecomics.xyz",
   "sourceUrl": "https://github.com/ito-community/sources",
   "contentRating": 1,
@@ -10,7 +10,6 @@
   "language": "en",
   "languages": ["en"],
   "type": "manga",
-  "kinds": ["manga", "novel"],
   "author": "kunihir0",
   "description": "Browse and read comics and novels from Flame Comics, with catalog filters and public image and text chapters."
 }

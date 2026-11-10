@@ -171,6 +171,7 @@ fn novel_from(value: &Value, slug: &str) -> Novel {
         content_rating: rating.clone(),
         nsfw: i32::from(matches!(rating, ContentRating::Nsfw)),
         chapters: None,
+        catalog: None,
     }
 }
 fn entry_from_item(item: &Value) -> Result<MediaEntry> {
@@ -291,16 +292,11 @@ fn parse_chapters(slug: &str, novel_id: &str, items: &[Value]) -> Result<Vec<Cha
             let title = string(item, "title");
             let number = title.as_deref().and_then(chapter_number);
             Ok(Chapter {
-                key: format!("{novel_id}:{id}"),
                 title,
-                volume: None,
-                chapter: number.map(|number| number as f32),
-                date_updated: None,
-                scanlator: None,
+                chapter: number,
                 url: Some(format!("{SITE}/read/{slug}/chapter-{}", id + 1)),
                 lang: Some("en".into()),
-                paywalled: None,
-                kind: ContentKind::Text,
+                ..Chapter::new(format!("{novel_id}:{id}"), ContentKind::Text)
             })
         })
         .collect()
@@ -710,6 +706,7 @@ mod tests {
         ];
         let chapters =
             parse_chapters("quiet-sample", "91", &rows).expect("synthetic rows are valid");
+        ito_rs::catalog::validate_chapters(&chapters).expect("SDK accepts the chapter list");
         assert_eq!(
             chapters
                 .iter()
