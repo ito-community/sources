@@ -21,9 +21,9 @@ env:
   # The ito-pkg revision that packs the plugins, verifies the packages and builds the repository
   # index: the strict-packaging release.
   ITO_PKG_REV: 1be6c19e2e96199b09db5bff7b541774693185a5
-  # Optional. When set to an ABI number, `ito-pkg pack` (through its environment variable) and
-  # `ito-pkg verify` (through `--expect-abi`) fail for any plugin built for a different ABI.
-  # ITO_EXPECTED_ABI: "3"
+  # `ito-pkg pack` (through this variable) and `ito-pkg verify` (through `--expect-abi`) fail for any
+  # plugin built for another ABI. Every plugin targets ABI 3, which Ito 1.5.0 and later run.
+  ITO_EXPECTED_ABI: "3"
 
 jobs:
   build:
