@@ -7,6 +7,8 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::HashMap;
 
+use ito_rs::models::{CatalogCompleteness, CatalogScope, ChapterCatalog};
+
 use crate::models::{ChapterItem, Scanlator};
 use crate::settings::{Alternatives, ChapterPreferences};
 
@@ -35,6 +37,23 @@ pub fn select(
         (None, None) => Ordering::Equal,
     });
     chapters
+}
+
+/// Describes the list [`select`] returns for these preferences. The scope is `AllEligible` only
+/// when no alternative is collapsed and no group is hidden, and `Visible` otherwise. Completeness
+/// stays `Partial` until the chapter endpoint's coverage is confirmed: the endpoint is
+/// undocumented, and the series page's chapter count does not always match the list it returns.
+pub fn catalog(preferences: &ChapterPreferences) -> ChapterCatalog {
+    let every_upload = preferences.alternatives == Alternatives::ShowAll
+        && preferences.hidden_scanlators.is_empty();
+    ChapterCatalog {
+        scope: if every_upload {
+            CatalogScope::AllEligible
+        } else {
+            CatalogScope::Visible
+        },
+        completeness: CatalogCompleteness::Partial,
+    }
 }
 
 struct Groups<'a> {
@@ -245,5 +264,25 @@ mod tests {
             ids(&select(sample(), &groups, &mode)),
             ["b2", "b1.5", "b1", "b0", "special"]
         );
+    }
+
+    #[test]
+    fn catalog_claims_every_upload_only_when_nothing_is_collapsed_or_hidden() {
+        assert_eq!(
+            catalog(&preferences(Alternatives::ShowAll)).scope,
+            CatalogScope::AllEligible
+        );
+        assert_eq!(
+            catalog(&preferences(Alternatives::HighestVoted)).scope,
+            CatalogScope::Visible
+        );
+        let mut hidden = preferences(Alternatives::ShowAll);
+        hidden.hidden_scanlators = vec!["beta".into()];
+        assert_eq!(catalog(&hidden).scope, CatalogScope::Visible);
+        assert_eq!(
+            catalog(&preferences(Alternatives::ShowAll)).completeness,
+            CatalogCompleteness::Partial
+        );
+        assert_eq!(catalog(&hidden).completeness, CatalogCompleteness::Partial);
     }
 }
