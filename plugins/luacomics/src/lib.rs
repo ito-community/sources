@@ -1,6 +1,6 @@
 use ito_rs::export_manga_plugin;
 use ito_rs::provider::MangaProvider;
-use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, LinkValue};
+use ito_rs::models::{ContentKind, Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, LinkValue};
 use ito_rs::models::manga::{Manga, Chapter, PageResult, Status, ContentRating, Viewer};
 use ito_rs::net::Request;
 use ito_rs::html::Node;
@@ -82,7 +82,47 @@ impl LuaComic {
             nsfw: 0,
             viewer: Viewer::Default,
             chapters: None,
+            catalog: None,
         }
+    }
+
+    /// Builds a series' chapter list from its `/chapter/all` rows. `series_key` is the series
+    /// key, `/series/<slug>`, which prefixes every chapter key.
+    fn chapters_from_api(series_key: &str, response: Vec<ApiChapter>) -> Vec<Chapter> {
+        let mut chapters = Vec::new();
+        for ch in response {
+            let key = format!("{}/{}", series_key, ch.chapter_slug);
+            let url = format!("{}{}", BASE_URL, key);
+
+            let chapter_number = ch
+                .chapter_name
+                .to_lowercase()
+                .replace("chapter ", "")
+                .trim()
+                .trim()
+                .parse::<f64>()
+                .unwrap_or_default();
+
+            let title = if let Some(t) = ch.chapter_title {
+                if t.is_empty() {
+                    Some(ch.chapter_name.clone())
+                } else {
+                    Some(t)
+                }
+            } else {
+                Some(ch.chapter_name.clone())
+            };
+
+            chapters.push(Chapter {
+                title,
+                chapter: Some(chapter_number),
+                url: Some(url),
+                lang: Some("en".to_string()),
+                paywalled: Some(ch.price > 0),
+                ..Chapter::new(key, ContentKind::Images)
+            });
+        }
+        chapters
     }
 }
 
@@ -261,42 +301,7 @@ impl MangaProvider for LuaComic {
             
             if let Ok(res) = Request::get(&api_url).send()
                 && let Ok(response) = serde_json::from_slice::<Vec<ApiChapter>>(&res.body) {
-                    let mut chapters = Vec::new();
-                    for ch in response {
-                        let key = format!("{}/{}", manga.key, ch.chapter_slug);
-                        let url = format!("{}{}", BASE_URL, key);
-                        
-                        let chapter_number = ch.chapter_name
-                            .to_lowercase()
-                            .replace("chapter ", "").trim()
-                            .trim()
-                            .parse::<f32>()
-                            .unwrap_or_default();
-
-                        let title = if let Some(t) = ch.chapter_title {
-                            if t.is_empty() { 
-                                Some(ch.chapter_name.clone())
-                            } else {
-                                Some(t)
-                            }
-                        } else {
-                            Some(ch.chapter_name.clone())
-                        };
-
-                        chapters.push(Chapter {
-                            key,
-                            title,
-                            chapter: Some(chapter_number),
-                            date_updated: None,
-                            url: Some(url),
-                            lang: Some("en".to_string()),
-                            paywalled: Some(ch.price > 0),
-                            volume: None,
-                            scanlator: None,
-                        });
-                    }
-                    
-                    manga.chapters = Some(chapters);
+                    manga.chapters = Some(Self::chapters_from_api(&manga.key, response));
                 }
         }
 
@@ -457,6 +462,7 @@ impl MangaProvider for LuaComic {
                                 nsfw: 0,
                                 viewer: Viewer::Default,
                                 chapters: None,
+                                catalog: None,
                             });
                         }
                     }
@@ -496,6 +502,7 @@ impl MangaProvider for LuaComic {
                                         nsfw: 0,
                                         viewer: Viewer::Default,
                                         chapters: None,
+                                        catalog: None,
                                     });
                                 }
                         }
@@ -542,6 +549,7 @@ impl MangaProvider for LuaComic {
                                             nsfw: 0,
                                             viewer: Viewer::Default,
                                             chapters: None,
+                                            catalog: None,
                                         });
                                     }
                             }
@@ -675,6 +683,7 @@ impl MangaProvider for LuaComic {
                     nsfw: 0,
                     viewer: Viewer::Default,
                     chapters: None,
+                    catalog: None,
                 }));
             }
         } else if key.starts_with("/series/") {
@@ -692,6 +701,7 @@ impl MangaProvider for LuaComic {
                 nsfw: 0,
                 viewer: Viewer::Default,
                 chapters: None,
+                catalog: None,
             }));
         }
 
@@ -700,3 +710,32 @@ impl MangaProvider for LuaComic {
 }
 
 export_manga_plugin!(LuaComic);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SERIES_KEY: &str = "/series/the-snow-leopard-baby-of-the-black-leopard-family";
+
+    #[test]
+    fn chapter_keys_are_stable() {
+        let rows: Vec<ApiChapter> = serde_json::from_str(include_str!("fixtures/chapter_all.json"))
+            .expect("fixture parses");
+        let keys: Vec<String> = LuaComic::chapters_from_api(SERIES_KEY, rows)
+            .into_iter()
+            .map(|c| c.key)
+            .collect();
+        let expected: Vec<String> = [
+            "chapter-83-3",
+            "chapter-83-2",
+            "chapter-83",
+            "chapter-82",
+            "chapter-76-1",
+            "chapter-76",
+        ]
+        .iter()
+        .map(|slug| format!("{SERIES_KEY}/{slug}"))
+        .collect();
+        assert_eq!(keys, expected);
+    }
+}

@@ -1,6 +1,6 @@
 use ito_rs::export_novel_plugin;
 use ito_rs::provider::NovelProvider;
-use ito_rs::models::{FilterItem, Listing, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue};
+use ito_rs::models::{ContentKind, FilterItem, Listing, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue};
 use ito_rs::models::novel::{Novel, Chapter, PageResult, Status as NovelStatus, ContentRating};
 use ito_rs::net::Request;
 use ito_rs::html::Node;
@@ -10,10 +10,22 @@ const BASE_URL: &str = "https://novelfire.net";
 
 pub struct NovelFire;
 
-impl NovelProvider for NovelFire {
-    fn get_home_stream() -> Result<bool> {
-        Ok(false)
+/// Builds one chapter from a row of the chapter list: the anchor's `href`, its `title`
+/// attribute, and the row's chapter number text when the row has one.
+fn chapter_from_row(href: Option<String>, title: &str, chapter_no: Option<&str>) -> Chapter {
+    let key = href
+        .as_deref()
+        .map(|h| h.split('/').next_back().unwrap_or_default().to_string())
+        .unwrap_or_default();
+    Chapter {
+        title: Some(title.split(':').nth(1).unwrap_or("").trim().to_string()),
+        chapter: chapter_no.and_then(|n| n.trim().parse::<f64>().ok()),
+        url: href,
+        ..Chapter::new(key, ContentKind::Text)
     }
+}
+
+impl NovelProvider for NovelFire {
 
     fn get_home() -> Result<HomeLayout> {
         let listing1 = Listing { id: "overall-ranking".to_string(), name: "Newly Hotted Updates".to_string(), kind: 0 };
@@ -132,6 +144,7 @@ impl NovelProvider for NovelFire {
                     content_rating: ContentRating::Safe,
                     nsfw: 0,
                     chapters: None,
+                    catalog: None,
                 });
             }
         }
@@ -178,6 +191,7 @@ impl NovelProvider for NovelFire {
                     content_rating: ContentRating::Safe,
                     nsfw: 0,
                     chapters: None,
+                    catalog: None,
                 });
             }
         }
@@ -260,25 +274,13 @@ impl NovelProvider for NovelFire {
                     let a_node = node.select("a")?.into_iter().next();
                     if let Some(a) = a_node {
                         let title = a.attr("title")?.unwrap_or_default();
-                        let key = a.attr("href")?.map(|h| h.split('/').next_back().unwrap_or_default().to_string()).unwrap_or_default();
-                        
                         let chap_no_node = node.select(".chapter-no")?.into_iter().next();
-                        let chapter_number = match chap_no_node {
-                            Some(n) => n.text()?.trim().parse::<f32>().ok(),
+                        let chapter_no = match chap_no_node {
+                            Some(n) => Some(n.text()?),
                             None => None,
                         };
-                        
-                        all_chapters.push(Chapter {
-                            key,
-                            title: Some(title.split(':').nth(1).unwrap_or("").trim().to_string()),
-                            volume: None,
-                            chapter: chapter_number,
-                            date_updated: None, 
-                            scanlator: None,
-                            url: a.attr("href")?,
-                            lang: None,
-                            paywalled: None,
-                        });
+
+                        all_chapters.push(chapter_from_row(a.attr("href")?, &title, chapter_no.as_deref()));
                     }
                 }
 
@@ -363,3 +365,55 @@ impl NovelProvider for NovelFire {
 }
 
 export_novel_plugin!(NovelFire);
+
+#[cfg(test)]
+mod tests {
+    use super::chapter_from_row;
+
+    /// Chapter-list rows of a saved page, as (anchor href, anchor title, chapter number text).
+    const CHAPTER_ROWS: &[(&str, &str, &str)] = &[
+        (
+            "/book/shadow-slave/chapter-1",
+            "Chapter 1 - 1: Nightmare Begins",
+            "1",
+        ),
+        (
+            "/book/shadow-slave/chapter-2",
+            "Chapter 2 - 2: Slave Caravan",
+            "2",
+        ),
+        (
+            "/book/shadow-slave/chapter-3",
+            "Chapter 3 - 3: The Strings of Fate",
+            "3",
+        ),
+        (
+            "/book/shadow-slave/chapter-50",
+            "Chapter 50 - 50: Death Trap",
+            "50",
+        ),
+        (
+            "/book/shadow-slave/chapter-100",
+            "Chapter 100 - 100: Clear Conscience",
+            "100",
+        ),
+    ];
+
+    #[test]
+    fn chapter_keys_are_stable() {
+        let keys: Vec<String> = CHAPTER_ROWS
+            .iter()
+            .map(|(href, title, no)| chapter_from_row(Some(href.to_string()), title, Some(no)).key)
+            .collect();
+        assert_eq!(
+            keys,
+            [
+                "chapter-1",
+                "chapter-2",
+                "chapter-3",
+                "chapter-50",
+                "chapter-100"
+            ]
+        );
+    }
+}
