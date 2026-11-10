@@ -28,9 +28,10 @@ impl MangaProvider for AsuraScans {
 
     fn handle_url(url: &str) -> Result<LinkValue> {
         if let Some(key) = get_manga_key(url) {
-            // If it's a chapter link, we still return the Manga for now as per Aidoku logic
-            // or we could return something else if supported.
-            // But usually handle_url returns the model to open.
+            // Handles both series and chapter links: the series key is taken from the
+            // path segment after `comics`, so a chapter link resolves to its series. A
+            // placeholder Manga is returned for the host to open; the title and chapter
+            // list are loaded afterwards.
             Ok(LinkValue::Manga(Manga {
                 key,
                 title: String::new(),
