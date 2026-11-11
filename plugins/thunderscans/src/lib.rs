@@ -34,6 +34,47 @@ mod tests {
     }
 
     #[test]
+    fn saved_series_page_yields_the_pinned_chapter_keys() {
+        let root = document(include_str!("fixtures/chapter_list.html"));
+        let chapters = parse_chapters(&root).expect("saved chapter list parses");
+        let keys: Vec<_> = chapters
+            .iter()
+            .map(|chapter| chapter.key.as_str())
+            .collect();
+        assert_eq!(
+            keys,
+            vec![
+                "locked:699758",
+                "locked:699757",
+                "locked:205357",
+                "/skill-lenders-retrieving-tale-i-told-you-its-10-per-10-days-at-first-didnt-i-chapter-109/",
+                "/skill-lenders-retrieving-tale-i-told-you-its-10-per-10-days-at-first-didnt-i-chapter-108/",
+                "/skill-lender-chapter-90/",
+                "/skill-lender-chapter-2-2/",
+                "/skill-lender-chapter-2-1/",
+                "/skill-lender-chapter-1-2/",
+                "/skill-lender-chapter-1-1/",
+            ]
+        );
+        let numbers: Vec<_> = chapters.iter().map(|chapter| chapter.chapter).collect();
+        assert_eq!(
+            numbers,
+            vec![
+                Some(130.0),
+                Some(129.0),
+                Some(110.0),
+                Some(109.0),
+                Some(108.0),
+                Some(90.0),
+                Some(2.2),
+                Some(2.1),
+                Some(1.2),
+                Some(1.1),
+            ]
+        );
+    }
+
+    #[test]
     fn search_query_encoding_preserves_unreserved_bytes() {
         assert_eq!(query_encode("a b&c"), "a%20b%26c");
         assert_eq!(query_encode("10.2"), "10%2E2");
@@ -42,16 +83,12 @@ mod tests {
     #[test]
     fn locked_metadata_refuses_access_before_request() {
         let chapter = Chapter {
-            key: "locked:9001".into(),
             title: Some("Chapter 42".into()),
-            volume: None,
             chapter: Some(42.0),
-            date_updated: None,
-            scanlator: None,
             url: None,
             lang: Some("en".into()),
             paywalled: Some(true),
-            kind: ContentKind::Images,
+            ..Chapter::new("locked:9001", ContentKind::Images)
         };
         assert!(matches!(
             readable_chapter_path(&chapter),
@@ -288,6 +325,7 @@ fn manga(key: String, title: String, cover: Option<String>, url: String) -> Mang
         nsfw: 0,
         viewer: Viewer::Webtoon,
         chapters: None,
+        catalog: None,
     }
 }
 
@@ -394,7 +432,12 @@ fn parse_chapters(root: &impl QueryNodes) -> Result<Vec<Chapter>> {
         let Some(number_text) = attr(&item, "data-num") else {
             continue;
         };
-        let number = number_text.parse::<f32>().ok();
+        // Values the SDK rejects (not finite, or beyond 1e9 in magnitude) are unknown, like
+        // unparseable numbers, so one bad row cannot fail the whole series.
+        let number = number_text
+            .parse::<f64>()
+            .ok()
+            .filter(|value| value.is_finite() && value.abs() <= 1e9);
         let Some(anchor) = item.query("a")?.into_iter().next() else {
             continue;
         };
@@ -420,9 +463,16 @@ fn parse_chapters(root: &impl QueryNodes) -> Result<Vec<Chapter>> {
         } else if url.is_some() {
             continue;
         } else {
-            let unique = format!("{base}#{}", index + 1);
-            keys.insert(unique.clone());
-            unique
+            // Suffixes come from list position, but a locked id can already end in one. Advance
+            // past every taken key so each row keeps a distinct key.
+            let mut position = index + 1;
+            loop {
+                let candidate = format!("{base}#{position}");
+                if keys.insert(candidate.clone()) {
+                    break candidate;
+                }
+                position += 1;
+            }
         };
         let chapter_title = anchor
             .query(".chapternum")?
@@ -430,16 +480,12 @@ fn parse_chapters(root: &impl QueryNodes) -> Result<Vec<Chapter>> {
             .next()
             .and_then(|node| text(&node));
         chapters.push(Chapter {
-            key,
             title: chapter_title,
-            volume: None,
             chapter: number,
-            date_updated: None,
-            scanlator: None,
             url,
             lang: Some("en".into()),
             paywalled: Some(locked),
-            kind: ContentKind::Images,
+            ..Chapter::new(key, ContentKind::Images)
         });
     }
     Ok(chapters)
@@ -866,6 +912,34 @@ mod pagination_tests {
         let chapters = parse_chapters(&root).expect("synthetic chapter list parses");
         let keys: Vec<_> = chapters.iter().map(|c| c.key.as_str()).collect();
         assert_eq!(keys, vec!["/series-chapter-4/", "locked:77", "locked:77#4"]);
+    }
+
+    #[test]
+    fn locked_rows_keep_unique_keys_when_a_position_suffix_is_already_taken() {
+        // The third row would derive "locked:5#3", which the first row's id already produced.
+        let root = document(
+            r##"<ul id="chapterlist">
+                <li data-num="5"><a data-bs-target="#lockedChapterModal" data-id="5#3"><span class="chapternum">Chapter 5</span></a></li>
+                <li data-num="6"><a data-bs-target="#lockedChapterModal" data-id="5"><span class="chapternum">Chapter 6</span></a></li>
+                <li data-num="7"><a data-bs-target="#lockedChapterModal" data-id="5"><span class="chapternum">Chapter 7</span></a></li>
+                <li data-num="8"><a data-bs-target="#lockedChapterModal" data-id="8"><span class="chapternum">Chapter 8</span></a></li>
+                <li data-num="8"><a data-bs-target="#lockedChapterModal" data-id="8"><span class="chapternum">Chapter 8</span></a></li>
+            </ul>"##,
+        );
+        let chapters = parse_chapters(&root).expect("synthetic chapter list parses");
+        let keys: Vec<_> = chapters.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            vec![
+                "locked:5#3",
+                "locked:5",
+                "locked:5#4",
+                "locked:8",
+                "locked:8#5"
+            ]
+        );
+        let unique: std::collections::HashSet<_> = keys.iter().collect();
+        assert_eq!(unique.len(), keys.len(), "chapter keys must be unique");
     }
 
     #[test]

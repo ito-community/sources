@@ -123,7 +123,7 @@ checksum = "edd0f118536f44f5ccd48bcb8b111bdc3de888b58c74639dfb034a357d0f206d"
 
 [[package]]
 name = "flamecomics"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "ito-rs",
  "scraper",
@@ -185,8 +185,8 @@ dependencies = [
 
 [[package]]
 name = "ito-rs"
-version = "0.7.0"
-source = "git+https://github.com/AtiinLabs/ito-rs?rev=af9d0bf22e2590053c76a9054331805e7e962ca9#af9d0bf22e2590053c76a9054331805e7e962ca9"
+version = "0.8.0"
+source = "git+https://github.com/AtiinLabs/ito-rs?rev=213ccaa26b7d7c3bc68f5399ba12ef8414f187a9#213ccaa26b7d7c3bc68f5399ba12ef8414f187a9"
 dependencies = [
  "postcard",
  "serde",

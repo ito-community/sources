@@ -1,12 +1,44 @@
 use ito_rs::export_manga_plugin;
 use ito_rs::provider::MangaProvider;
-use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue};
+use ito_rs::models::{ContentKind, Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue};
 use ito_rs::models::manga::{Manga, Chapter, PageResult, Status, ContentRating, Viewer};
 use ito_rs::net::Request;
 use ito_rs::html::Node;
 use ito_rs::Result;
+use ito_rs::catalog::{MAX_KEY_BYTES, MAX_TITLE_BYTES};
+use std::collections::HashSet;
 
 const BASE_URL: &str = "https://violetmanga.com";
+
+/// One row of the site's chapter list as read from the page, newest first.
+struct ChapterRow {
+    href: String,
+    title: Option<String>,
+}
+
+/// Maps the chapter list into chapters. A chapter's number counts down from the number of rows,
+/// so it depends only on its place in the list. A row whose key would be empty, longer than the
+/// SDK allows or already listed is left out, since the SDK rejects a whole list that carries one
+/// of those; the rows left out still count, so the other numbers do not move.
+fn chapters_from_rows(rows: Vec<ChapterRow>) -> Vec<Chapter> {
+    let mut chapter_num = rows.len() as f64;
+    let mut listed = HashSet::with_capacity(rows.len());
+    let mut chapters = Vec::with_capacity(rows.len());
+    for row in rows {
+        let key = row.href.replace(BASE_URL, "").replace("/", "");
+        if !key.is_empty() && key.len() <= MAX_KEY_BYTES && listed.insert(key.clone()) {
+            chapters.push(Chapter {
+                title: row.title.filter(|title| title.len() <= MAX_TITLE_BYTES),
+                url: Some(row.href),
+                chapter: Some(chapter_num),
+                lang: Some("en".to_string()),
+                ..Chapter::new(key, ContentKind::Images)
+            });
+        }
+        chapter_num -= 1.0;
+    }
+    chapters
+}
 
 struct VioletScans;
 
@@ -66,6 +98,7 @@ impl VioletScans {
                                 nsfw: 0,
                                 viewer: Viewer::Default,
                                 chapters: None,
+                                catalog: None,
                             });
                         }
                     }
@@ -176,43 +209,28 @@ impl MangaProvider for VioletScans {
         }
 
         if needs_chapters {
-            let mut chapters = Vec::new();
-            
+            let mut rows = Vec::new();
+
             if let Ok(chbox_nodes) = html.select("#chapterlist li") {
-                let mut chapter_num = chbox_nodes.len() as f32;
-                
                 for item in chbox_nodes {
-                    let mut chapter_url = String::new();
-                    
+                    let mut href = String::new();
+
                     if let Ok(a_nodes) = item.select("a")
                         && let Some(a_tag) = a_nodes.first() {
-                            chapter_url = a_tag.attr("href")?.unwrap_or_default();
+                            href = a_tag.attr("href")?.unwrap_or_default();
                         }
-                    
-                    let key = chapter_url.replace(BASE_URL, "").replace("/", "");
-                    
+
                     let mut title = None;
                     if let Ok(nodes) = item.select(".chapternum")
                         && let Some(node) = nodes.first() {
                             title = Some(node.text()?);
                         }
-                    
-                    chapters.push(Chapter {
-                        key,
-                        title,
-                        url: Some(chapter_url),
-                        chapter: Some(chapter_num),
-                        date_updated: None,
-                        scanlator: None,
-                        lang: Some("en".to_string()),
-                        paywalled: None,
-                        volume: None,
-                    });
-                    chapter_num -= 1.0;
+
+                    rows.push(ChapterRow { href, title });
                 }
             }
-            
-            manga.chapters = Some(chapters);
+
+            manga.chapters = Some(chapters_from_rows(rows));
         }
 
         Ok(manga)
@@ -280,6 +298,7 @@ impl MangaProvider for VioletScans {
                                         nsfw: 0,
                                         viewer: Viewer::Default,
                                         chapters: None,
+                                        catalog: None,
                                     });
                                 }
                             }
@@ -339,6 +358,7 @@ impl MangaProvider for VioletScans {
                                                     nsfw: 0,
                                                     viewer: Viewer::Default,
                                                     chapters: None,
+                                                    catalog: None,
                                                 });
                                             }
                                         }
@@ -352,16 +372,10 @@ impl MangaProvider for VioletScans {
                                     kind: 0,
                                 };
                                 
-                                let value = if title_text.contains("Latest Update") {
-                                    HomeComponentValue::MangaChapterList(None, entries.into_iter().map(|m| ito_rs::models::MangaWithChapter { manga: m, chapter: Chapter { key: String::new(), title: None, volume: None, chapter: None, date_updated: None, scanlator: None, url: None, lang: None, paywalled: None } }).collect(), Some(listing))
-                                } else {
-                                    HomeComponentValue::Scroller(entries, Some(listing))
-                                };
-                                
                                 components.push(HomeComponent {
                                     title: Some(title_text),
                                     subtitle: None,
-                                    value,
+                                    value: HomeComponentValue::Scroller(entries, Some(listing)),
                                 });
                             }
                         }
@@ -373,3 +387,69 @@ impl MangaProvider for VioletScans {
 }
 
 export_manga_plugin!(VioletScans);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn row(href: &str, title: Option<&str>) -> ChapterRow {
+        ChapterRow {
+            href: href.to_string(),
+            title: title.map(str::to_string),
+        }
+    }
+
+    /// Key stability over a trimmed chapter list (representative rows, not a saved page). A key
+    /// is the URL path segment without slashes, and a chapter's number counts down from the list
+    /// length, so the numbers shown for existing chapters do not move.
+    #[test]
+    fn keys_are_the_path_segments_and_numbers_count_down_from_the_list_length() {
+        let chapters = chapters_from_rows(vec![
+            row(
+                "https://violetmanga.com/hunter-chapter-12/",
+                Some("Chapter 12"),
+            ),
+            row(
+                "https://violetmanga.com/hunter-chapter-11/",
+                Some("Chapter 11"),
+            ),
+            row("https://violetmanga.com/hunter-chapter-0/", None),
+        ]);
+        let keys: Vec<_> = chapters.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(
+            keys,
+            ["hunter-chapter-12", "hunter-chapter-11", "hunter-chapter-0"]
+        );
+        let numbers: Vec<_> = chapters.iter().map(|c| c.chapter).collect();
+        assert_eq!(numbers, [Some(3.0), Some(2.0), Some(1.0)]);
+        assert_eq!(
+            chapters[0].url.as_deref(),
+            Some("https://violetmanga.com/hunter-chapter-12/")
+        );
+        assert_eq!(chapters[0].title.as_deref(), Some("Chapter 12"));
+    }
+
+    /// The SDK rejects a whole list that repeats a key, carries an empty or over-long key, or a
+    /// title over 1 KiB. Such rows are left out or untitled, and the other numbers do not move.
+    #[test]
+    fn rows_the_sdk_would_reject_are_left_out_and_the_numbers_stay() {
+        let long_title = "x".repeat(MAX_TITLE_BYTES + 1);
+        let long_key = format!("https://violetmanga.com/{}/", "k".repeat(MAX_KEY_BYTES + 1));
+        let chapters = chapters_from_rows(vec![
+            row("https://violetmanga.com/hunter-chapter-5/", None),
+            row("", Some("No link")),
+            row("https://violetmanga.com/hunter-chapter-5/", Some("Again")),
+            row(&long_key, None),
+            row(
+                "https://violetmanga.com/hunter-chapter-1/",
+                Some(long_title.as_str()),
+            ),
+        ]);
+        let keys: Vec<_> = chapters.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["hunter-chapter-5", "hunter-chapter-1"]);
+        let numbers: Vec<_> = chapters.iter().map(|c| c.chapter).collect();
+        assert_eq!(numbers, [Some(5.0), Some(1.0)]);
+        assert_eq!(chapters[1].title, None);
+        assert!(ito_rs::catalog::validate_chapters(&chapters).is_ok());
+    }
+}

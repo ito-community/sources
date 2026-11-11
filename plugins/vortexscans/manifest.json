@@ -1,8 +1,8 @@
 {
   "id": "com.kunihir0.vortexscans",
   "name": "Vortex Scans",
-  "version": "1.0.0",
-  "min_app_version": "1.4.0",
+  "version": "1.1.0",
+  "min_app_version": "1.5.0",
   "url": "https://vortexscans.org",
   "sourceUrl": "https://github.com/ito-community/sources",
   "contentRating": 1,
@@ -10,7 +10,6 @@
   "language": "en",
   "languages": ["en"],
   "type": "manga",
-  "kinds": ["manga"],
   "author": "kunihir0",
   "description": "Discover Vortex Scans comics and read publicly accessible chapters. Locked chapters require access on the website."
 }

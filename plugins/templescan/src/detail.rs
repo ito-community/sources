@@ -12,6 +12,7 @@ use crate::links::{self, Link};
 use crate::models::{is_status, rating_of, severity, status_of};
 use crate::numbers;
 use crate::time;
+use ito_rs::catalog::{MAX_ABS_DATE, MAX_ABS_NUMBER, MAX_TITLE_BYTES};
 use ito_rs::models::manga::{ContentRating, Status};
 use ito_rs::models::{Chapter, ContentKind};
 use ito_rs::{Error, Result};
@@ -286,28 +287,29 @@ pub fn chapter_from_anchor(
     let mut labels = labels.into_iter();
     let name = labels.next().unwrap_or_else(|| slug.clone());
     let subtitle = labels.next();
-    let number =
-        numbers::from_name(&name).or_else(|| facts.position.map(|position| position as f32));
+    let number = numbers::from_name(&name)
+        .or(facts.position)
+        .filter(|number| number.abs() <= MAX_ABS_NUMBER);
     let date = anchor
         .first("time[datetime]")?
         .and_then(|time| attr(&time, "datetime"))
-        .and_then(time::parse_iso);
+        .and_then(time::parse_iso)
+        .filter(|date| date.abs() <= MAX_ABS_DATE);
     let title = match subtitle {
         Some(subtitle) => format!("{name}: {subtitle}"),
         None => name,
     };
+    let url = links::chapter_url(series, &slug);
     Ok(Chapter {
-        url: Some(links::chapter_url(series, &slug)),
-        key: slug,
-        title: Some(title),
-        volume: None,
+        url: Some(url),
+        title: Some(title).filter(|title| title.len() <= MAX_TITLE_BYTES),
         chapter: number,
         date_updated: date,
         scanlator: None,
         lang: Some("en".into()),
         // Only the site's own early-access marks lock a chapter; nothing is assumed otherwise.
         paywalled: premium.then_some(true),
-        kind: ContentKind::Images,
+        ..Chapter::new(slug, ContentKind::Images)
     })
 }
 
@@ -476,6 +478,54 @@ pub(crate) mod tests {
                 .iter()
                 .all(|c| c.kind == ContentKind::Images && c.lang.as_deref() == Some("en"))
         );
+    }
+
+    /// Key stability over a trimmed chapter list (representative rows built by the test helpers,
+    /// not a saved page). A key is the site slug byte for byte, whatever the name, number, date
+    /// or lock says, and a repeated slug is one chapter. Downloads and reading progress are keyed
+    /// by it, so the SDK port must not change it.
+    #[test]
+    fn keys_are_the_site_slugs_whatever_the_names_numbers_or_locks() {
+        let mut locked = row("chapter-12-b", "Chapter 12", "2025-05-01T00:00:00Z");
+        locked.premium = true;
+        let rows = [
+            row("chapter-13", "Chapter 12", "2025-06-01T00:00:00Z"),
+            locked,
+            row("95958-chapter-1", "Chapter 1", "2025-01-01T00:00:00Z"),
+            row("chapter-13", "Chapter 13", "2025-06-01T00:00:00Z"),
+        ];
+        let chapters = series(&rows, "").chapters;
+        let keys: Vec<_> = chapters.iter().map(|c| c.key.as_str()).collect();
+        assert_eq!(keys, ["chapter-13", "chapter-12-b", "95958-chapter-1"]);
+    }
+
+    /// The SDK rejects a whole chapter list that holds a number beyond 1e9, a date beyond 1e11 or
+    /// a title over 1 KiB, so such values are left unknown and nothing else about the chapter
+    /// changes.
+    #[test]
+    fn values_the_sdk_would_reject_are_left_unknown() {
+        let long_subtitle = "x".repeat(MAX_TITLE_BYTES);
+        let mut long = row("chapter-2", "Chapter 2", "2025-01-02T00:00:00Z");
+        long.subtitle = Some(long_subtitle.as_str());
+        let rows = [
+            row(
+                "chapter-huge",
+                "Chapter 10000000000",
+                "9999-01-01T00:00:00Z",
+            ),
+            row(
+                "chapter-limit",
+                "Chapter 1000000000",
+                "2025-01-01T00:00:00Z",
+            ),
+            long,
+        ];
+        let chapters = series(&rows, "").chapters;
+        assert_eq!(chapters[0].chapter, None);
+        assert_eq!(chapters[0].date_updated, None);
+        assert_eq!(chapters[1].chapter, Some(1_000_000_000.0));
+        assert_eq!(chapters[2].title, None);
+        assert!(ito_rs::catalog::validate_chapters(&chapters).is_ok());
     }
 
     #[test]

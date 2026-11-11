@@ -210,6 +210,7 @@ fn manga(path: &str, title: String, cover: Option<String>) -> Manga {
         nsfw: 0,
         viewer: Viewer::Webtoon,
         chapters: None,
+        catalog: None,
     }
 }
 fn cards(root: &impl QueryNodes) -> Result<Vec<MediaEntry>> {
@@ -547,14 +548,14 @@ fn chapters(html: &str) -> Result<Vec<Chapter>> {
             .or_else(|| text(&anchor))
             .unwrap_or_default();
         let number = attr(&row, "data-num")
-            .and_then(|value| value.parse::<f32>().ok())
+            .and_then(|value| value.parse::<f64>().ok())
             .or_else(|| {
                 label
                     .strip_prefix("Chapter")
                     .unwrap_or(&label)
                     .split_whitespace()
                     .next()?
-                    .parse::<f32>()
+                    .parse::<f64>()
                     .ok()
             });
         let date_updated = anchor
@@ -563,7 +564,6 @@ fn chapters(html: &str) -> Result<Vec<Chapter>> {
             .and_then(text)
             .and_then(|value| chapter_date(&value));
         out.push(Chapter {
-            key: path.trim_matches('/').to_owned(),
             title: (!label.is_empty()).then_some(label),
             volume: None,
             chapter: number,
@@ -572,7 +572,7 @@ fn chapters(html: &str) -> Result<Vec<Chapter>> {
             url: Some(format!("{ORIGIN}{path}")),
             lang: Some("en".into()),
             paywalled: None,
-            kind: ContentKind::Images,
+            ..Chapter::new(path.trim_matches('/'), ContentKind::Images)
         });
     }
     if out.is_empty() {
@@ -935,6 +935,23 @@ mod tests {
         );
         assert!(items.iter().all(|chapter| chapter.paywalled.is_none()));
         assert!(chapters("<ul id='chapterlist'></ul>").is_err());
+    }
+    #[test]
+    fn saved_series_page_yields_the_pinned_chapter_keys() {
+        let items = chapters(include_str!("fixtures/chapter_list.html")).expect("chapter list");
+        assert_eq!(
+            items
+                .iter()
+                .map(|chapter| chapter.key.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "chapter/r2311170-a-bad-person-chapter-127",
+                "chapter/r2311170-a-bad-person-chapter-126",
+                "chapter/r2311170-a-bad-person-chapter-125",
+                "chapter/r2311170-a-bad-person-chapter-2",
+                "chapter/r2311170-a-bad-person-chapter-1",
+            ]
+        );
     }
     #[test]
     fn reader_preserves_dom_order_and_excludes_ads() {

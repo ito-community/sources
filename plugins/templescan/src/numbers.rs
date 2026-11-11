@@ -9,7 +9,7 @@
 const WORDS: [&str; 5] = ["chapter", "chap", "ch", "episode", "ep"];
 
 /// The number in a chapter name: the first number after a chapter word, else the first number.
-pub fn from_name(name: &str) -> Option<f32> {
+pub fn from_name(name: &str) -> Option<f64> {
     let lower = name.to_ascii_lowercase();
     let bytes = lower.as_bytes();
     for start in 0..bytes.len() {

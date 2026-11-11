@@ -1,4 +1,5 @@
-use std::collections::HashMap;
+use ito_rs::models::manga::Chapter;
+use std::collections::{HashMap, HashSet};
 
 use crate::models::ComixChapter;
 
@@ -33,6 +34,13 @@ pub fn dedup_insert(map: &mut HashMap<String, ComixChapter>, ch: ComixChapter) {
     }
 }
 
+/// Keeps the first chapter with each key. The SDK rejects a whole list that repeats a key, which
+/// can happen when the site's order shifts between pages.
+pub fn retain_first_keys(chapters: &mut Vec<Chapter>) {
+    let mut seen = HashSet::with_capacity(chapters.len());
+    chapters.retain(|chapter| seen.insert(chapter.key.clone()));
+}
+
 pub fn urlencode(value: &str) -> String {
     urlencoding::encode(value).into_owned()
 }
@@ -41,6 +49,7 @@ pub fn urlencode(value: &str) -> String {
 mod tests {
     use super::*;
     use crate::models::ScanlationGroup;
+    use ito_rs::models::ContentKind;
 
     fn chapter(votes: i32, is_official: bool, group: Option<i32>) -> ComixChapter {
         ComixChapter {
@@ -80,5 +89,24 @@ mod tests {
         dedup_insert(&mut map, chapter(5, false, Some(2)));
         assert_eq!(map["1"].chapter_id, 5);
         assert_eq!(map["1"].scanlation_group_id, Some(1));
+    }
+
+    fn titled(key: &str, title: &str) -> Chapter {
+        Chapter {
+            title: Some(title.into()),
+            ..Chapter::new(key, ContentKind::Images)
+        }
+    }
+
+    #[test]
+    fn repeated_chapter_keys_keep_the_first_occurrence() {
+        let mut chapters = vec![
+            titled("1", "first"),
+            titled("2", "second"),
+            titled("1", "repeat"),
+        ];
+        retain_first_keys(&mut chapters);
+        let titles: Vec<&str> = chapters.iter().filter_map(|c| c.title.as_deref()).collect();
+        assert_eq!(titles, ["first", "second"]);
     }
 }
