@@ -1,6 +1,6 @@
 use ito_rs::export_manga_plugin;
 use ito_rs::provider::MangaProvider;
-use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, MangaWithChapter, Setting, SettingsSchema, LinkValue};
+use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, MangaWithChapter, Setting, SettingsSchema, LinkValue, ContentKind};
 use ito_rs::models::manga::{Manga, Chapter, PageResult, Status, ContentRating, Viewer};
 use ito_rs::net::Request;
 use ito_rs::html::Node;
@@ -8,6 +8,7 @@ use ito_rs::Result;
 use ito_rs::defaults;
 
 mod helpers;
+mod chapters;
 use helpers::*;
 
 struct AsuraScans;
@@ -46,6 +47,7 @@ impl MangaProvider for AsuraScans {
                 nsfw: 0,
                 viewer: Viewer::Default,
                 chapters: None,
+                catalog: None,
             }))
         } else {
             Err(ito_rs::Error::Host("Invalid URL".to_string()))
@@ -87,6 +89,7 @@ impl MangaProvider for AsuraScans {
                                         nsfw: 0,
                                         viewer: Viewer::Default,
                                         chapters: None,
+                                        catalog: None,
                                     });
                                 }
                     }
@@ -118,12 +121,14 @@ impl MangaProvider for AsuraScans {
                         
                         if let (Some(link), Some(chapter_link)) = (link, chapter_link)
                             && let (Some(manga_href), Some(chapter_href)) = (link.attr("href")?, chapter_link.attr("href")?)
-                                && let (Some(manga_key), Some(chapter_key)) = (get_manga_key(&manga_href), get_chapter_key(&chapter_href)) {
+                                && let (Some(manga_key), Some(chapter_key)) = (get_manga_key(&manga_href), get_chapter_key(&chapter_href))
+                                    && !chapter_key.is_empty() {
                                     let chapter_number = chapter_link.select("span.font-medium")?
                                         .first()
                                         .and_then(|s| s.text().ok())
                                         .and_then(|s| s.strip_prefix("Chapter").map(|s| s.trim().to_string()))
-                                        .and_then(|s| s.parse::<f32>().ok());
+                                        .and_then(|s| s.parse::<f64>().ok())
+                                        .and_then(chapters::chapter_number);
 
                                     entries.push(MangaWithChapter {
                                         manga: Manga {
@@ -140,17 +145,15 @@ impl MangaProvider for AsuraScans {
                                             nsfw: 0,
                                             viewer: Viewer::Default,
                                             chapters: None,
+                                            catalog: None,
                                         },
                                         chapter: Chapter {
-                                            key: chapter_key,
                                             title: None,
-                                            volume: None,
                                             chapter: chapter_number,
-                                            date_updated: None,
-                                            scanlator: None,
                                             url: Some(chapter_href),
                                             lang: Some("en".to_string()),
                                             paywalled: None,
+                                            ..Chapter::new(chapter_key, ContentKind::Images)
                                         },
                                     });
                                 }
@@ -203,6 +206,7 @@ impl MangaProvider for AsuraScans {
                                     nsfw: 0,
                                     viewer: Viewer::Default,
                                     chapters: None,
+                                    catalog: None,
                                 });
                             }
             }
@@ -283,36 +287,9 @@ impl MangaProvider for AsuraScans {
                     let json: serde_json::Value = serde_json::from_str(&props).map_err(|_| ito_rs::Error::Host("JSON parse error".to_string()))?;
                     
                     if let Some(chapters_arr) = json["chapters"][1].as_array() {
-                        let mut chapters = Vec::new();
                         let show_locked = defaults::get("show_locked")?.unwrap_or_else(|| "true".to_string()) == "true";
-
-                        for entry in chapters_arr {
-                            // Astro props encode each value as [type, value]. Index through
-                            // `Value` (not `Map`) so a missing field yields Null instead of panicking.
-                            let obj = &entry[1];
-                            if obj.is_object() {
-                                let locked = obj["is_premium"][1].as_bool().unwrap_or_default();
-                                if !show_locked && locked {
-                                    continue;
-                                }
-
-                                let chapter_number = obj["number"][1].as_f64().map(|f| f as f32);
-                                let key = chapter_number.map(|f| f.to_string()).unwrap_or_default();
-                                
-                                chapters.push(Chapter {
-                                    key: key.clone(),
-                                    title: obj["title"][1].as_str().map(str::to_string),
-                                    volume: None,
-                                    chapter: chapter_number,
-                                    date_updated: None, 
-                                    scanlator: None,
-                                    url: Some(get_chapter_url(&key, &manga.key)),
-                                    lang: Some("en".to_string()),
-                                    paywalled: Some(locked),
-                                });
-                            }
-                        }
-                        manga.chapters = Some(chapters);
+                        manga.chapters = Some(chapters::parse_chapter_list(chapters_arr, &manga.key, show_locked));
+                        manga.catalog = chapters::list_catalog(show_locked);
                     }
                 }
 
