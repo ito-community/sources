@@ -262,6 +262,7 @@ fn open_link<S: Site>(address: &str) -> Result<LinkValue> {
         nsfw: 0,
         viewer: Viewer::Webtoon,
         chapters: None,
+        catalog: None,
     };
     match update::<S>(MediaEntry::Manga(seed), true, true)? {
         MediaEntry::Manga(manga) => Ok(LinkValue::Manga(manga)),
@@ -436,21 +437,14 @@ mod tests {
             nsfw: 0,
             viewer: Viewer::Webtoon,
             chapters: None,
+            catalog: None,
         })
     }
 
     fn chapter(key: &str, paywalled: Option<bool>) -> Chapter {
         Chapter {
-            key: key.into(),
-            title: None,
-            volume: None,
-            chapter: None,
-            date_updated: None,
-            scanlator: None,
-            url: None,
-            lang: None,
             paywalled,
-            kind: ContentKind::Images,
+            ..Chapter::new(key, ContentKind::Images)
         }
     }
 
