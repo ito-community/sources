@@ -252,6 +252,8 @@ impl MangaProvider for Comix {
                     .collect()
             };
 
+            helpers::retain_first_keys(&mut chapters);
+
             if deduplicate {
                 chapters.sort_by(|a, b| {
                     let a_num = a.chapter.unwrap_or(0.0);
