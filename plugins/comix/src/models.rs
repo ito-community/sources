@@ -1,4 +1,4 @@
-use crate::{settings, BASE_URL};
+use crate::{BASE_URL, settings};
 use ito_rs::catalog::{MAX_ABS_NUMBER, MAX_SCANLATOR_NAME_BYTES, MAX_TITLE_BYTES};
 use ito_rs::models::manga::{
     Chapter, ContentRating, Manga, PageResult, Status as MangaStatus, Viewer,
@@ -417,6 +417,7 @@ mod tests {
         let chapter = chapter(1.0, None, Some("Group Nine"), false).into_chapter("hid");
         assert_eq!(chapter.scanlator, Some(Scanlator::named("Group Nine")));
     }
+
     #[test]
     fn same_number_uploads_keep_distinct_chapter_ids_and_group_relationships() {
         let alpha = ComixChapter {

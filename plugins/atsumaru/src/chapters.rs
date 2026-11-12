@@ -209,7 +209,9 @@ mod tests {
         let result = select(sample(), &groups, &preferences(Alternatives::ShowAll));
         assert_eq!(
             ids(&result),
-            ["a2", "a2-extra", "b2", "b1.5", "a1", "b1", "a0", "b0", "special"]
+            [
+                "a2", "a2-extra", "b2", "b1.5", "a1", "b1", "a0", "b0", "special"
+            ]
         );
     }
 
@@ -277,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn group_identity_survives_a_display_name_change() {
+    fn hiding_by_series_group_id_ignores_the_display_name() {
         let chapter = chapter("stable", "group-id", Some(1.0), 1, 1);
         let renamed_group = [group("group-id", "Renamed", 1.0)];
         let mut mode = preferences(Alternatives::ShowAll);
@@ -287,16 +289,38 @@ mod tests {
     }
 
     #[test]
+    fn hiding_by_an_old_display_name_stops_matching_after_a_rename() {
+        let chapter = chapter("stable", "group-id", Some(1.0), 1, 1);
+        let renamed_group = [group("group-id", "Renamed", 1.0)];
+        let mut mode = preferences(Alternatives::ShowAll);
+        mode.hidden_scanlators = vec!["Old Name".into()];
+
+        assert_eq!(
+            ids(&select(vec![chapter.clone()], &renamed_group, &mode)),
+            ["stable"]
+        );
+        mode.hidden_scanlators = vec!["renamed".into()];
+        assert!(select(vec![chapter], &renamed_group, &mode).is_empty());
+    }
+
+    #[test]
     fn same_number_groups_remain_distinct_and_same_group_splits_survive() {
-        let groups = [group("a", "Alpha", 1.0), group("b", "Beta", 2.0)];
+        let groups = [group("a", "Alpha", 2.0), group("b", "Beta", 1.0)];
         let chapters = vec![
             chapter("a-part-one", "a", Some(1.0), 1, 10),
             chapter("a-part-two", "a", Some(1.0), 2, 10),
             chapter("b-version", "b", Some(1.0), 3, 10),
         ];
-        let result = select(chapters, &groups, &preferences(Alternatives::HighestVoted));
 
-        assert_eq!(ids(&result), ["b-version"]);
+        let collapsed = select(
+            chapters.clone(),
+            &groups,
+            &preferences(Alternatives::HighestVoted),
+        );
+        assert_eq!(ids(&collapsed), ["a-part-one", "a-part-two"]);
+
+        let all = select(chapters, &groups, &preferences(Alternatives::ShowAll));
+        assert_eq!(ids(&all), ["a-part-one", "a-part-two", "b-version"]);
     }
 
     #[test]
