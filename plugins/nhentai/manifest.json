@@ -1,7 +1,7 @@
 {
     "id": "com.ito.community.nhentai",
     "name": "nhentai",
-    "version": "1.0.0",
+    "version": "1.0.3",
     "min_app_version": "1.5.0",
     "url": "https://nhentai.net",
     "sourceUrl": "https://github.com/ito-community/sources",
