@@ -1,0 +1,15 @@
+{
+    "id": "com.ito.community.nhentai",
+    "name": "nhentai",
+    "version": "1.0.0",
+    "min_app_version": "1.5.0",
+    "url": "https://nhentai.net",
+    "sourceUrl": "https://github.com/ito-community/sources",
+    "contentRating": 2,
+    "nsfw": 1,
+    "language": "en",
+    "languages": ["en", "ja", "zh"],
+    "type": "manga",
+    "author": "ito-community",
+    "description": "Browse and read galleries on nhentai. Lolicon and shotacon are not available."
+}

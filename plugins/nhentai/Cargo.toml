@@ -1,0 +1,16 @@
+[package]
+name = "nhentai"
+version = "1.0.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[profile.release]
+lto = true
+opt-level = "s"
+
+[dependencies]
+ito-rs = { git = "https://github.com/AtiinLabs/ito-rs", rev = "213ccaa26b7d7c3bc68f5399ba12ef8414f187a9" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
