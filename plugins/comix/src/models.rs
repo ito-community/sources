@@ -417,4 +417,74 @@ mod tests {
         let chapter = chapter(1.0, None, Some("Group Nine"), false).into_chapter("hid");
         assert_eq!(chapter.scanlator, Some(Scanlator::named("Group Nine")));
     }
+
+    #[test]
+    fn same_number_uploads_keep_distinct_chapter_ids_and_group_relationships() {
+        let alpha = ComixChapter {
+            chapter_id: 21,
+            scanlation_group_id: Some(11),
+            number: 4.0,
+            name: None,
+            votes: 0,
+            is_official: false,
+            scanlation_group: Some(ScanlationGroup {
+                name: "Alpha".into(),
+            }),
+        };
+        let beta = ComixChapter {
+            chapter_id: 22,
+            scanlation_group_id: Some(12),
+            number: 4.0,
+            name: None,
+            votes: 0,
+            is_official: false,
+            scanlation_group: Some(ScanlationGroup {
+                name: "Beta".into(),
+            }),
+        };
+
+        let alpha = alpha.into_chapter("title");
+        let beta = beta.into_chapter("title");
+        assert_eq!(alpha.key, "21");
+        assert_eq!(beta.key, "22");
+        assert_eq!(alpha.chapter, Some(4.0));
+        assert_eq!(beta.chapter, Some(4.0));
+        assert_eq!(alpha.scanlator, Some(Scanlator::named("Alpha")));
+        assert_eq!(beta.scanlator, Some(Scanlator::named("Beta")));
+    }
+
+    #[test]
+    fn adjacent_float_numbers_keep_their_exact_values_and_chapter_ids() {
+        let adjacent = f64::from_bits(4.0f64.to_bits() + 1);
+        let first = ComixChapter {
+            chapter_id: 31,
+            scanlation_group_id: Some(11),
+            number: 4.0,
+            name: None,
+            votes: 0,
+            is_official: false,
+            scanlation_group: Some(ScanlationGroup {
+                name: "Alpha".into(),
+            }),
+        }
+        .into_chapter("title");
+        let second = ComixChapter {
+            chapter_id: 32,
+            scanlation_group_id: Some(11),
+            number: adjacent,
+            name: None,
+            votes: 0,
+            is_official: false,
+            scanlation_group: Some(ScanlationGroup {
+                name: "Alpha".into(),
+            }),
+        }
+        .into_chapter("title");
+
+        assert_eq!(first.key, "31");
+        assert_eq!(second.key, "32");
+        assert_eq!(first.chapter, Some(4.0));
+        assert_eq!(second.chapter, Some(adjacent));
+        assert_ne!(first.chapter, second.chapter);
+    }
 }
