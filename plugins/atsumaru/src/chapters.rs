@@ -209,9 +209,7 @@ mod tests {
         let result = select(sample(), &groups, &preferences(Alternatives::ShowAll));
         assert_eq!(
             ids(&result),
-            [
-                "a2", "a2-extra", "b2", "b1.5", "a1", "b1", "a0", "b0", "special"
-            ]
+            ["a2", "a2-extra", "b2", "b1.5", "a1", "b1", "a0", "b0", "special"]
         );
     }
 
@@ -263,6 +261,60 @@ mod tests {
         assert_eq!(
             ids(&select(sample(), &groups, &mode)),
             ["b2", "b1.5", "b1", "b0", "special"]
+        );
+    }
+
+    #[test]
+    fn hidden_group_remains_ineligible_when_alternatives_are_collapsed() {
+        let groups = [group("a", "Alpha", 1.0), group("b", "Beta", 9.0)];
+        let mut mode = preferences(Alternatives::HighestVoted);
+        mode.hidden_scanlators = vec!["b".into()];
+
+        assert_eq!(
+            ids(&select(sample(), &groups, &mode)),
+            ["a2", "a2-extra", "a1", "a0"]
+        );
+    }
+
+    #[test]
+    fn group_identity_survives_a_display_name_change() {
+        let chapter = chapter("stable", "group-id", Some(1.0), 1, 1);
+        let renamed_group = [group("group-id", "Renamed", 1.0)];
+        let mut mode = preferences(Alternatives::ShowAll);
+        mode.hidden_scanlators = vec!["group-id".into()];
+
+        assert!(select(vec![chapter], &renamed_group, &mode).is_empty());
+    }
+
+    #[test]
+    fn same_number_groups_remain_distinct_and_same_group_splits_survive() {
+        let groups = [group("a", "Alpha", 1.0), group("b", "Beta", 2.0)];
+        let chapters = vec![
+            chapter("a-part-one", "a", Some(1.0), 1, 10),
+            chapter("a-part-two", "a", Some(1.0), 2, 10),
+            chapter("b-version", "b", Some(1.0), 3, 10),
+        ];
+        let result = select(chapters, &groups, &preferences(Alternatives::HighestVoted));
+
+        assert_eq!(ids(&result), ["b-version"]);
+    }
+
+    #[test]
+    fn close_but_distinct_numbers_are_not_collapsed_together() {
+        let groups = [group("a", "Alpha", 1.0), group("b", "Beta", 2.0)];
+        let just_above_one = f64::from_bits(1.0f64.to_bits() + 1);
+        let chapters = vec![
+            chapter("one", "a", Some(1.0), 1, 10),
+            chapter("next_float", "b", Some(just_above_one), 2, 10),
+        ];
+
+        assert_eq!(
+            ids(&select(
+                chapters,
+                &groups,
+                &preferences(Alternatives::HighestVoted)
+            )),
+            ["next_float", "one"]
         );
     }
 
