@@ -266,7 +266,8 @@ pub fn option_page(request: OptionRequest) -> Result<OptionPage> {
             } else if offset > 0 {
                 Ok(empty_page())
             } else {
-                let tags = api::search_tags(kind, &text, limit)?;
+                let mut tags = api::search_tags(kind, &text, limit)?;
+                tags.truncate(limit as usize);
                 Ok(page_from(tags, kind, None, None))
             }
         }
@@ -299,15 +300,66 @@ pub fn suggestions(query: &str) -> Result<Vec<SearchSuggestion>> {
 }
 
 fn browse_catalog(kind: &str, offset: u32, limit: u32) -> Result<OptionPage> {
-    let page_no = offset / limit + 1;
-    let response = api::tags_by_type(kind, page_no as i32, limit as i32)?;
-    let more = page_no < response.num_pages.max(0) as u32;
-    Ok(page_from(
-        response.result,
-        kind,
-        more.then_some(offset.saturating_add(limit)),
-        response.total.map(|total| total as u32),
-    ))
+    let limit = limit.max(1);
+    // The tag list currently ignores per_page and returns 120. Returning more
+    // than the host limit is a contract violation, so window the server page.
+    let guessed = catalog_window(offset, limit);
+    let mut response = api::tags_by_type(kind, page_param(guessed.page), limit as i32)?;
+    let page_size = server_page_size(&response);
+    let window = catalog_window(offset, page_size);
+    if window.page != guessed.page {
+        response = api::tags_by_type(kind, page_param(window.page), page_size as i32)?;
+    }
+    let total = response
+        .total
+        .filter(|total| *total >= 0)
+        .map(|total| total as u32);
+    let num_pages = response.num_pages.max(0) as u32;
+    let mut tags = take_window(&mut response.result, window.start as usize, limit as usize);
+    let need = (limit as usize).saturating_sub(tags.len());
+    if need > 0 && window.page < num_pages {
+        let mut next = api::tags_by_type(kind, page_param(window.page + 1), page_size as i32)?;
+        tags.extend(take_window(&mut next.result, 0, need));
+    }
+    let consumed = tags.len() as u32;
+    let next_offset = offset.saturating_add(consumed);
+    let more = consumed > 0 && total.is_some_and(|total| next_offset < total);
+    Ok(page_from(tags, kind, more.then_some(next_offset), total))
+}
+
+fn catalog_window(offset: u32, page_size: u32) -> CatalogWindow {
+    let page_size = page_size.max(1);
+    CatalogWindow {
+        page: (offset / page_size).saturating_add(1),
+        start: offset % page_size,
+    }
+}
+
+struct CatalogWindow {
+    page: u32,
+    start: u32,
+}
+
+fn server_page_size(page: &api::TagPage) -> u32 {
+    let declared = page.per_page.max(0) as u32;
+    if declared > 0 {
+        declared
+    } else {
+        (page.result.len() as u32).max(1)
+    }
+}
+
+fn page_param(page: u32) -> i32 {
+    i32::try_from(page).unwrap_or(i32::MAX).max(1)
+}
+
+fn take_window<T>(items: &mut Vec<T>, start: usize, limit: usize) -> Vec<T> {
+    let end = start.saturating_add(limit).min(items.len());
+    if start >= end {
+        Vec::new()
+    } else {
+        items.drain(start..end).collect()
+    }
 }
 
 fn page_from(
@@ -318,6 +370,7 @@ fn page_from(
 ) -> OptionPage {
     let options = tags
         .into_iter()
+        .filter(|tag| !tag.name.is_empty())
         .filter(|tag| !is_blocked_name(&tag.name))
         .filter(|tag| kind != "language" || !is_meta_language(&tag.name))
         .map(|tag| {
@@ -432,5 +485,25 @@ mod tests {
             Sort::from_control(values.select("sort").unwrap()),
             Sort::Date
         );
+    }
+    #[test]
+    fn server_tag_pages_are_windowed_to_the_host_limit() {
+        let mut page: Vec<u32> = (0..120).collect();
+        let window = catalog_window(0, 120);
+        let taken = take_window(&mut page, window.start as usize, 50);
+        assert_eq!(taken.len(), 50);
+        assert_eq!(taken[0], 0);
+        assert_eq!(taken[49], 49);
+
+        let mut page: Vec<u32> = (0..120).collect();
+        let window = catalog_window(100, 120);
+        assert_eq!((window.page, window.start), (1, 100));
+        let mut taken = take_window(&mut page, window.start as usize, 50);
+        assert_eq!(taken.len(), 20);
+        let mut next: Vec<u32> = (120..240).collect();
+        taken.extend(take_window(&mut next, 0, 50 - taken.len()));
+        assert_eq!(taken.len(), 50);
+        assert_eq!(taken[0], 100);
+        assert_eq!(taken[49], 149);
     }
 }

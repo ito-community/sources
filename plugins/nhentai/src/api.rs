@@ -1,5 +1,6 @@
 //! nhentai API v2. Public reads work without a key. A saved key is sent for a
 //! higher limit and for favorites, and a rejected key falls back on public calls.
+//! Search rejects an empty query, so unfiltered browse uses a page-count filter.
 
 use crate::query::Sort;
 use ito_rs::defaults;
@@ -9,7 +10,7 @@ use serde::Deserialize;
 use serde::de::DeserializeOwned;
 
 const API: &str = "https://nhentai.net/api/v2";
-const USER_AGENT: &str = "nhentai/1.0.0 (https://github.com/ito-community/sources)";
+const USER_AGENT: &str = "nhentai/1.0.3 (https://github.com/ito-community/sources)";
 const REFERER: &str = "https://nhentai.net/";
 
 #[derive(Debug, Deserialize)]
@@ -89,6 +90,9 @@ pub struct PageImage {
 pub struct TagPage {
     pub result: Vec<Tag>,
     pub num_pages: i32,
+    /// The server's page size. It can ignore the requested `per_page`.
+    #[serde(default)]
+    pub per_page: i32,
     #[serde(default)]
     pub total: Option<i32>,
 }
@@ -110,10 +114,22 @@ pub fn api_key() -> Option<String> {
     (!key.is_empty()).then(|| key.to_owned())
 }
 
+/// Search returns HTTP 400 when `query` is empty. Unfiltered browse still needs
+/// every sort, and `pages:>=1` is a filter that endpoint accepts.
+const UNFILTERED_QUERY: &str = "pages:>=1";
+
+fn search_query(query: &str) -> &str {
+    if query.trim().is_empty() {
+        UNFILTERED_QUERY
+    } else {
+        query
+    }
+}
+
 pub fn search(query: &str, page: i32, sort: Sort) -> Result<Page> {
     let url = format!(
         "{API}/search?query={}&page={}&sort={}",
-        encode(query),
+        encode(search_query(query)),
         page.max(1),
         sort.as_str()
     );
@@ -269,4 +285,17 @@ fn encode(value: &str) -> String {
         }
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn empty_search_uses_a_query_the_endpoint_accepts() {
+        assert_eq!(search_query(""), UNFILTERED_QUERY);
+        assert_eq!(search_query("   "), UNFILTERED_QUERY);
+        assert_eq!(search_query("language:\"english\""), "language:\"english\"");
+        assert!(!encode(search_query("")).is_empty());
+    }
 }
