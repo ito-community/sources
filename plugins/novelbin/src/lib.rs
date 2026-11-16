@@ -11,6 +11,7 @@ use ito_rs::provider::SourceProvider;
 use ito_rs::{Error, Result};
 use scraper::{ElementRef, Html};
 use serde_json::Value;
+use std::borrow::Cow;
 use std::collections::HashMap;
 
 const SITE: &str = "https://novelbin.xyz";
@@ -76,6 +77,57 @@ fn safe_segment(value: &str) -> Option<&str> {
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_')))
     .then_some(value)
+}
+
+/// A catalog key: the site's ASCII slug, or the percent-encoded UTF-8 the site itself uses in
+/// slugs for titles with non-ASCII characters. Only unreserved ASCII and `%XX` escapes of bytes
+/// from 0x80 up that decode as UTF-8 are accepted, so no separator, dot segment or reserved
+/// character can reach a path. Escape digits are canonicalised to lowercase, so `%E2%9C%95` and
+/// `%e2%9c%95` name the same key.
+fn catalog_key(value: &str) -> Option<Cow<'_, str>> {
+    if value
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return safe_segment(value).map(Cow::Borrowed);
+    }
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut canonical = String::with_capacity(bytes.len());
+    let mut index = 0;
+    while let Some(&byte) = bytes.get(index) {
+        if byte == b'%' {
+            let high_digit = *bytes.get(index + 1)?;
+            let low_digit = *bytes.get(index + 2)?;
+            let high = hex_value(high_digit)?;
+            let low = hex_value(low_digit)?;
+            let escaped = high << 4 | low;
+            if escaped < 0x80 {
+                return None;
+            }
+            decoded.push(escaped);
+            canonical.push('%');
+            canonical.push(char::from(high_digit.to_ascii_lowercase()));
+            canonical.push(char::from(low_digit.to_ascii_lowercase()));
+            index += 3;
+        } else if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_') {
+            decoded.push(byte);
+            canonical.push(char::from(byte));
+            index += 1;
+        } else {
+            return None;
+        }
+    }
+    std::str::from_utf8(&decoded).ok()?;
+    Some(if canonical == value {
+        Cow::Borrowed(value)
+    } else {
+        Cow::Owned(canonical)
+    })
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    char::from(byte).to_digit(16).map(|digit| digit as u8)
 }
 
 fn string(value: &Value, key: &str) -> Option<String> {
@@ -176,8 +228,8 @@ fn novel_from(value: &Value, slug: &str) -> Novel {
 }
 fn entry_from_item(item: &Value) -> Result<MediaEntry> {
     let slug = string(item, "slug").ok_or_else(host_error)?;
-    let slug = safe_segment(&slug).ok_or_else(host_error)?;
-    Ok(MediaEntry::Novel(novel_from(item, slug)))
+    let slug = catalog_key(&slug).ok_or_else(host_error)?;
+    Ok(MediaEntry::Novel(novel_from(item, &slug)))
 }
 
 /// How a catalog response is paged; decided by the listing path, never by the JSON shape.
@@ -190,32 +242,77 @@ enum Paging {
 }
 
 fn page_result(data: &Value, page: i32, paging: Paging) -> Result<MediaPageResult> {
-    let Some(items) = array(data) else {
-        return Err(host_error());
-    };
-    let entries = items
-        .iter()
-        .map(entry_from_item)
-        .collect::<Result<Vec<_>>>()?;
-    let (entries, has_next_page) = match paging {
+    let items = array(data).ok_or_else(host_error)?;
+    require_usable_rows(items)?;
+    match paging {
         Paging::Remote => {
-            let has_more = data
+            let entries = items
+                .iter()
+                .filter(|row| has_catalog_slug(row))
+                .map(entry_from_item)
+                .collect::<Result<Vec<_>>>()?;
+            let has_next_page = data
                 .get("has_more")
                 .and_then(Value::as_bool)
                 .unwrap_or(false);
-            (entries, has_more)
+            Ok(MediaPageResult {
+                entries,
+                has_next_page,
+            })
         }
-        Paging::Local => {
-            let start = (page.max(1) as usize - 1).saturating_mul(PAGE_SIZE);
-            let has_more = start.saturating_add(PAGE_SIZE) < entries.len();
-            let batch = entries.into_iter().skip(start).take(PAGE_SIZE).collect();
-            (batch, has_more)
-        }
-    };
+        Paging::Local => index_page(items.iter(), page),
+    }
+}
+
+/// A listing that has rows but no row with a usable slug has changed shape. That is an error, not
+/// an empty page.
+fn require_usable_rows(items: &[Value]) -> Result<()> {
+    if !items.is_empty() && !items.iter().any(has_catalog_slug) {
+        return Err(host_error());
+    }
+    Ok(())
+}
+
+/// One `PAGE_SIZE` batch of a catalog listing. Rows whose slug cannot form an entry are skipped,
+/// and only the rows of the requested batch are converted.
+fn index_page<'a>(rows: impl Iterator<Item = &'a Value>, page: i32) -> Result<MediaPageResult> {
+    let offset = (page.max(1) as usize - 1).saturating_mul(PAGE_SIZE);
+    let mut usable = rows.filter(|row| has_catalog_slug(row));
+    let entries = usable
+        .by_ref()
+        .skip(offset)
+        .take(PAGE_SIZE)
+        .map(entry_from_item)
+        .collect::<Result<Vec<_>>>()?;
+    let has_next_page = usable.next().is_some();
     Ok(MediaPageResult {
         entries,
         has_next_page,
     })
+}
+
+fn has_catalog_slug(row: &Value) -> bool {
+    row.get("slug")
+        .and_then(Value::as_str)
+        .and_then(catalog_key)
+        .is_some()
+}
+
+/// Matches the search index by title, alternative titles and slug, ignoring case.
+fn search_page(data: &Value, query: &str, page: i32) -> Result<MediaPageResult> {
+    let items = array(data).ok_or_else(host_error)?;
+    require_usable_rows(items)?;
+    let query = query.trim().to_lowercase();
+    index_page(
+        items.iter().filter(|item| {
+            query.is_empty()
+                || ["title", "alternative_titles", "slug"]
+                    .iter()
+                    .filter_map(|key| string(item, key))
+                    .any(|field| field.to_lowercase().contains(&query))
+        }),
+        page,
+    )
 }
 
 fn listing_path(listing: &Listing, page: i32) -> Result<(String, Paging)> {
@@ -274,10 +371,10 @@ fn clean_description(raw: &str) -> Option<String> {
 }
 
 fn chapters_for(slug: &str, novel_id: &str) -> Result<Vec<Chapter>> {
-    let novel_id = safe_segment(novel_id).ok_or_else(host_error)?;
+    let novel_id = catalog_key(novel_id).ok_or_else(host_error)?;
     let data = get_json(&format!("chapters/{novel_id}.json"))?;
     let items = data.as_array().ok_or_else(host_error)?;
-    parse_chapters(slug, novel_id, items)
+    parse_chapters(slug, &novel_id, items)
 }
 
 fn parse_chapters(slug: &str, novel_id: &str, items: &[Value]) -> Result<Vec<Chapter>> {
@@ -322,7 +419,7 @@ fn chapter_number(title: &str) -> Option<f64> {
 
 fn readable_chapter_path(chapter: &Chapter) -> Result<String> {
     let (novel_id, id) = chapter.key.split_once(':').ok_or_else(host_error)?;
-    let novel_id = safe_segment(novel_id).ok_or_else(host_error)?;
+    let novel_id = catalog_key(novel_id).ok_or_else(host_error)?;
     let id: u64 = id.parse().map_err(|_| host_error())?;
     Ok(format!("read/{novel_id}/{id}.json"))
 }
@@ -440,7 +537,7 @@ fn parse_link(url: &str) -> Option<String> {
     }
     let mut segments = path.split(['?', '#']).next()?.split('/');
     match segments.next()? {
-        "novel" | "read" => safe_segment(segments.next()?).map(str::to_owned),
+        "novel" | "read" => catalog_key(segments.next()?).map(Cow::into_owned),
         _ => None,
     }
 }
@@ -540,26 +637,7 @@ impl SourceProvider for NovelBin {
         _kind: Option<MediaKind>,
         _filters: Vec<FilterItem>,
     ) -> Result<MediaPageResult> {
-        let data = get_list("lists/web_search.json")?;
-        let query = query.trim().to_lowercase();
-        let entries = array(&data)
-            .ok_or_else(host_error)?
-            .iter()
-            .filter(|item| {
-                query.is_empty()
-                    || ["title", "alternative_titles", "slug"]
-                        .iter()
-                        .filter_map(|key| string(item, key))
-                        .any(|field| field.to_lowercase().contains(&query))
-            })
-            .map(entry_from_item)
-            .collect::<Result<Vec<_>>>()?;
-        let offset = (page.max(1) as usize - 1).saturating_mul(PAGE_SIZE);
-        let has_next_page = offset.saturating_add(PAGE_SIZE) < entries.len();
-        Ok(MediaPageResult {
-            entries: entries.into_iter().skip(offset).take(PAGE_SIZE).collect(),
-            has_next_page,
-        })
+        search_page(&get_list("lists/web_search.json")?, query, page)
     }
 
     fn get_media_update(
@@ -573,7 +651,7 @@ impl SourceProvider for NovelBin {
         if !needs_details && !needs_units {
             return Ok(entry);
         }
-        let slug = safe_segment(&novel.key).ok_or_else(host_error)?;
+        let slug = catalog_key(&novel.key).ok_or_else(host_error)?;
         let details = if needs_details || needs_units {
             Some(get_json(&format!("novel/{slug}.json"))?)
         } else {
@@ -610,8 +688,8 @@ impl SourceProvider for NovelBin {
                         .map(str::to_owned)
                         .unwrap_or_else(|| id.to_string())
                 })
-                .unwrap_or_else(|| slug.to_owned());
-            novel.chapters = Some(chapters_for(slug, &novel_id)?);
+                .unwrap_or_else(|| slug.to_string());
+            novel.chapters = Some(chapters_for(&slug, &novel_id)?);
         }
         Ok(entry)
     }
@@ -691,6 +769,9 @@ mod tests {
             )
             .is_err()
         );
+        let mixed = serde_json::json!({"data":[{"title":"missing slug"},{"slug":"quiet-sample","title":"Quiet"}],"has_more":false});
+        let page = page_result(&mixed, 1, Paging::Remote).expect("one usable row is enough");
+        assert_eq!(page.entries.len(), 1);
         assert!(page_result(&serde_json::json!({"unexpected": []}), 1, Paging::Local).is_err());
         assert_eq!(safe_segment("../sample"), None);
         assert_eq!(safe_segment("sample/name"), None);
@@ -830,5 +911,102 @@ mod tests {
             content_rating(&serde_json::json!({"is_adult":false})),
             ContentRating::Safe
         ));
+    }
+
+    #[test]
+    fn percent_encoded_catalog_keys_are_kept_as_the_site_writes_them() {
+        for key in [
+            "pure-love-%e2%9c%95-insult-complex",
+            "%c2%bd-prince",
+            "pokemon%ef%bc%9ason-of-giovanni",
+            "sample-name_2",
+        ] {
+            assert_eq!(catalog_key(key).as_deref(), Some(key), "input {key}");
+        }
+        for key in [
+            "",
+            "%41",
+            "%2e%2e",
+            "%2f",
+            "%ff",
+            "%e2%9c",
+            "%e2%9c%95/x",
+            "%e2%9c%g1",
+            "bad%",
+            "../sample",
+            "sample name",
+        ] {
+            assert_eq!(catalog_key(key).as_deref(), None, "input {key}");
+        }
+        assert_eq!(
+            parse_link("https://novelbin.xyz/novel/pure-love-%e2%9c%95-insult-complex").as_deref(),
+            Some("pure-love-%e2%9c%95-insult-complex")
+        );
+    }
+
+    #[test]
+    fn index_search_skips_rows_that_cannot_form_an_entry() {
+        let mut rows: Vec<Value> = (0..25)
+            .map(|index| serde_json::json!({"slug": format!("story-{index}"), "title": format!("Story {index}")}))
+            .collect();
+        rows.insert(
+            3,
+            serde_json::json!({"slug": "pure-love-%e2%9c%95-insult-complex", "title": "Pure Love x Insult Complex"}),
+        );
+        rows.insert(
+            5,
+            serde_json::json!({"slug": "bad/slug", "title": "Story bad"}),
+        );
+        rows.push(serde_json::json!({"title": "Story without a slug"}));
+        let data = Value::Array(rows);
+        let first = search_page(&data, "", 1).expect("index is a list");
+        assert_eq!(first.entries.len(), PAGE_SIZE);
+        assert!(first.has_next_page);
+        let second = search_page(&data, "", 2).expect("index is a list");
+        assert_eq!(second.entries.len(), 2);
+        assert!(!second.has_next_page);
+        let matched = search_page(&data, "  INSULT ", 1).expect("index is a list");
+        assert!(matches!(
+            matched.entries.as_slice(),
+            [MediaEntry::Novel(novel)] if novel.key == "pure-love-%e2%9c%95-insult-complex"
+        ));
+        assert!(search_page(&serde_json::json!({"unexpected": []}), "", 1).is_err());
+    }
+
+    #[test]
+    fn an_index_whose_rows_lack_slugs_is_an_error_not_an_empty_listing() {
+        let rows = serde_json::json!([{"title": "Story one"}, {"title": "Story two"}]);
+        assert!(page_result(&rows, 1, Paging::Local).is_err());
+        assert!(
+            page_result(
+                &serde_json::json!({"data": rows.clone(), "has_more": false}),
+                1,
+                Paging::Remote,
+            )
+            .is_err()
+        );
+        assert!(search_page(&rows, "", 1).is_err());
+        assert!(search_page(&rows, "story", 1).is_err());
+        let empty = serde_json::json!([]);
+        let none =
+            page_result(&empty, 1, Paging::Local).expect("an empty index is an empty listing");
+        assert!(none.entries.is_empty());
+        assert!(!none.has_next_page);
+    }
+
+    #[test]
+    fn percent_escape_case_does_not_change_the_key() {
+        assert_eq!(
+            catalog_key("pure-love-%E2%9C%95-insult-complex").as_deref(),
+            Some("pure-love-%e2%9c%95-insult-complex")
+        );
+        assert_eq!(
+            catalog_key("%C2%BD-Prince").as_deref(),
+            Some("%c2%bd-Prince")
+        );
+        assert_eq!(
+            parse_link("https://novelbin.xyz/novel/pure-love-%E2%9C%95-insult-complex"),
+            parse_link("https://novelbin.xyz/novel/pure-love-%e2%9c%95-insult-complex"),
+        );
     }
 }

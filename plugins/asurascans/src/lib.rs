@@ -13,6 +13,75 @@ use helpers::*;
 
 struct AsuraScans;
 
+fn chapter_list_missing() -> ito_rs::Error {
+    ito_rs::Error::Host("Asura Scans returned a series page without its chapter list".into())
+}
+
+fn pages_missing() -> ito_rs::Error {
+    ito_rs::Error::Host("Asura Scans returned a chapter page without its page list".into())
+}
+
+/// The error for a reader without a page list. A locked chapter asks for sign-in on the website;
+/// any other chapter means the site's reader data changed.
+fn missing_pages(chapter: &Chapter) -> ito_rs::Error {
+    if chapter.paywalled == Some(true) {
+        ito_rs::Error::NeedsLogin(
+            "This chapter is locked on Asura Scans. Open it in the browser to sign in or unlock it."
+                .into(),
+        )
+    } else {
+        pages_missing()
+    }
+}
+
+/// The pages of the reader island, each a `[tag, value]` pair like the chapter rows. `None` means
+/// the reader carries no page list. An entry without an image address is an error, so a chapter
+/// with holes is never returned as if it were complete.
+fn reader_pages(props: &str) -> Result<Option<Vec<Page>>> {
+    let json: serde_json::Value = serde_json::from_str(props)
+        .map_err(|_| ito_rs::Error::Host("JSON parse error".to_string()))?;
+    let Some(page_arr) = json["pages"][1]
+        .as_array()
+        .filter(|rows| !rows.is_empty())
+    else {
+        return Ok(None);
+    };
+    let pages = page_arr
+        .iter()
+        .enumerate()
+        .map(|(i, obj)| -> Result<Page> {
+            let url = obj[1]["url"][1].as_str().ok_or_else(|| {
+                ito_rs::Error::Host(
+                    "Asura Scans returned a chapter page without an image address".into(),
+                )
+            })?;
+            Ok(Page {
+                index: i as i32,
+                content: PageContent::Url(url.to_string()),
+                has_description: false,
+                description: None,
+                headers: None,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(Some(pages))
+}
+
+/// The chapter rows of the series page's chapter-list island. Astro serialises each prop as a
+/// `[tag, value]` pair, so the list is the value at index 1.
+fn chapter_rows(props: &str) -> ito_rs::Result<Vec<serde_json::Value>> {
+    let mut json: serde_json::Value = serde_json::from_str(props)
+        .map_err(|_| ito_rs::Error::Host("JSON parse error".to_string()))?;
+    match json
+        .get_mut("chapters")
+        .and_then(|chapters| chapters.get_mut(1))
+        .map(serde_json::Value::take)
+    {
+        Some(serde_json::Value::Array(rows)) => Ok(rows),
+        _ => Err(chapter_list_missing()),
+    }
+}
+
 impl MangaProvider for AsuraScans {
     fn get_settings() -> Option<SettingsSchema> {
         Some(SettingsSchema {
@@ -221,6 +290,9 @@ impl MangaProvider for AsuraScans {
     fn get_manga_update(mut manga: Manga, needs_details: bool, needs_chapters: bool) -> Result<Manga> {
         let url = get_manga_url(&manga.key);
         let res = Request::get(&url).send()?;
+        if needs_details || needs_chapters {
+            check_response(res.status, &res.body)?;
+        }
         let html = Node::new(&res.body);
 
         if needs_details {
@@ -281,17 +353,19 @@ impl MangaProvider for AsuraScans {
             }
         }
 
-        if needs_chapters
-            && let Some(island) = html.select("astro-island[component-url*=ChapterListReact], astro-island[opts*=ChapterListReact]")?.first()
-                && let Some(props) = island.attr("props")? {
-                    let json: serde_json::Value = serde_json::from_str(&props).map_err(|_| ito_rs::Error::Host("JSON parse error".to_string()))?;
-                    
-                    if let Some(chapters_arr) = json["chapters"][1].as_array() {
-                        let show_locked = defaults::get("show_locked")?.unwrap_or_else(|| "true".to_string()) == "true";
-                        manga.chapters = Some(chapters::parse_chapter_list(chapters_arr, &manga.key, show_locked));
-                        manga.catalog = chapters::list_catalog(show_locked);
-                    }
-                }
+        if needs_chapters {
+            let islands = html.select("astro-island[component-url*=ChapterListReact], astro-island[opts*=ChapterListReact]")?;
+            let props = match islands.first() {
+                Some(island) => island.attr("props")?,
+                None => None,
+            }
+            .ok_or_else(chapter_list_missing)?;
+            let rows = chapter_rows(&props)?;
+            let show_locked =
+                defaults::get("show_locked")?.unwrap_or_else(|| "true".to_string()) == "true";
+            manga.chapters = Some(chapters::parse_chapter_list(&rows, &manga.key, show_locked));
+            manga.catalog = chapters::list_catalog(show_locked);
+        }
 
         Ok(manga)
     }
@@ -299,30 +373,91 @@ impl MangaProvider for AsuraScans {
     fn get_page_list(manga: Manga, chapter: Chapter) -> Result<Vec<Page>> {
         let url = get_chapter_url(&chapter.key, &manga.key);
         let res = Request::get(url).send()?;
+        check_response(res.status, &res.body)?;
         let html = Node::new(&res.body);
 
-        if let Some(island) = html.select("astro-island[component-url*=ChapterReader], astro-island[opts*=ChapterReader]")?.first()
-            && let Some(props) = island.attr("props")? {
-                let json: serde_json::Value = serde_json::from_str(&props).map_err(|_| ito_rs::Error::Host("JSON parse error".to_string()))?;
-                if let Some(page_arr) = json["pages"][1].as_array() {
-                    let mut pages = Vec::new();
-                    for (i, obj) in page_arr.iter().enumerate() {
-                        if let Some(url) = obj[1]["url"][1].as_str() {
-                            pages.push(Page {
-                                index: i as i32,
-                                content: PageContent::Url(url.to_string()),
-                                has_description: false,
-                                description: None,
-                                headers: None,
-                            });
-                        }
-                    }
-                    return Ok(pages);
-                }
-            }
-
-        Ok(vec![])
+        let islands = html.select("astro-island[component-url*=ChapterReader], astro-island[opts*=ChapterReader]")?;
+        let props = match islands.first() {
+            Some(island) => island.attr("props")?,
+            None => None,
+        };
+        let pages = match props {
+            Some(props) => reader_pages(&props)?,
+            None => None,
+        };
+        pages.ok_or_else(|| missing_pages(&chapter))
     }
 }
 
 export_manga_plugin!(AsuraScans);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_series_page_without_its_chapter_list_is_an_error() {
+        let rows = chapter_rows(r#"{"chapters":[0,[[0,{"number":[0,1]}]]]}"#)
+            .expect("chapter list is present");
+        assert_eq!(rows.len(), 1);
+        assert!(matches!(
+            chapter_rows(r#"{"title":[0,"x"]}"#),
+            Err(ito_rs::Error::Host(_))
+        ));
+        assert!(matches!(
+            chapter_rows(r#"{"chapters":[0,{}]}"#),
+            Err(ito_rs::Error::Host(_))
+        ));
+        assert!(matches!(
+            chapter_rows("not json"),
+            Err(ito_rs::Error::Host(_))
+        ));
+    }
+
+    #[test]
+    fn reader_pages_are_all_returned_or_the_read_fails() {
+        let pages = reader_pages(
+            r#"{"pages":[0,[[0,{"url":[0,"https://cdn.example/1.webp"]}],[0,{"url":[0,"https://cdn.example/2.webp"]}]]]}"#,
+        )
+        .expect("page list parses")
+        .expect("page list is present");
+        assert_eq!(pages.len(), 2);
+        assert_eq!(pages[1].index, 1);
+        assert!(matches!(
+            reader_pages(
+                r#"{"pages":[0,[[0,{"url":[0,"https://cdn.example/1.webp"]}],[0,{"url":[0,null]}]]]}"#
+            ),
+            Err(ito_rs::Error::Host(_))
+        ));
+        assert!(matches!(
+            reader_pages("not json"),
+            Err(ito_rs::Error::Host(_))
+        ));
+    }
+
+    #[test]
+    fn a_reader_without_a_page_list_carries_none() {
+        assert!(matches!(reader_pages(r#"{"chapter":[0,{}]}"#), Ok(None)));
+        assert!(matches!(reader_pages(r#"{"pages":[0,[]]}"#), Ok(None)));
+    }
+
+    #[test]
+    fn a_locked_chapter_without_pages_asks_for_sign_in() {
+        let locked = Chapter {
+            paywalled: Some(true),
+            ..Chapter::new("1".to_string(), ContentKind::Images)
+        };
+        assert!(matches!(
+            missing_pages(&locked),
+            ito_rs::Error::NeedsLogin(_)
+        ));
+        let open = Chapter {
+            paywalled: Some(false),
+            ..Chapter::new("1".to_string(), ContentKind::Images)
+        };
+        let unknown = Chapter::new("1".to_string(), ContentKind::Images);
+        for chapter in [open, unknown] {
+            assert!(matches!(missing_pages(&chapter), ito_rs::Error::Host(_)));
+        }
+    }
+}

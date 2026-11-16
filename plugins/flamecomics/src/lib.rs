@@ -101,8 +101,10 @@ fn numeric(value: &Value) -> Option<f64> {
 fn valid_id(id: &str) -> bool {
     !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())
 }
+/// Chapter tokens are 16 ASCII letters or digits. The site writes some tokens in lowercase hex and
+/// others in mixed case, often within one series, so the rule is the shape rather than the alphabet.
 fn valid_token(token: &str) -> bool {
-    token.len() == 16 && token.bytes().all(|b| b.is_ascii_hexdigit())
+    token.len() == 16 && token.bytes().all(|b| b.is_ascii_alphanumeric())
 }
 fn route(kind: MediaKind) -> &'static str {
     if kind == MediaKind::Novel {
@@ -1123,5 +1125,25 @@ mod tests {
             Some(Error::NeedsLogin(_))
         ));
         assert!(matches!(response_error(404, b""), Some(Error::NotFound(_))));
+    }
+
+    #[test]
+    fn chapter_tokens_may_mix_hex_with_other_letters_and_digits() {
+        let data = json!({"chapters":[
+            {"token":"N9tCZqVUzU3Mgf0r","chapter":"169.00","title":"Latest","price":"0.00"},
+            {"token":"b9c103a26c413d9f","chapter":"168.00","price":"0.00"}]});
+        let chapters = parse_chapters(&data, MediaKind::Manga, "152").expect("chapters");
+        ito_rs::catalog::validate_chapters(&chapters).expect("SDK accepts the chapter list");
+        assert_eq!(
+            chapters
+                .iter()
+                .map(|chapter| chapter.key.as_str())
+                .collect::<Vec<_>>(),
+            ["b9c103a26c413d9f", "N9tCZqVUzU3Mgf0r"]
+        );
+        assert!(valid_token("N9tCZqVUzU3Mgf0r"));
+        assert!(!valid_token("N9tCZqVUzU3Mgf0"));
+        assert!(!valid_token("N9tCZqVUzU3Mgf0-"));
+        assert!(!valid_token("N9tCZqVUzU3Mgf0/"));
     }
 }
