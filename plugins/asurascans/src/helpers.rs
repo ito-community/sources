@@ -47,3 +47,73 @@ pub fn get_manga_url(manga_id: &str) -> String {
 pub fn get_chapter_url(chapter_id: &str, manga_id: &str) -> String {
 	format!("{BASE_URL}/comics/{manga_id}/chapter/{chapter_id}")
 }
+
+/// Recognises a Cloudflare verification page from its markers only; the body is never returned.
+fn is_challenge_page(body: &[u8]) -> bool {
+	let text = String::from_utf8_lossy(body);
+	text.contains("cf-chl-")
+		|| text.contains("<title>Just a moment")
+		|| text.contains("<title>Attention Required!")
+}
+
+/// Maps a page that did not load to its error. A verification page means the site is asking the
+/// user, so the host opens the site for it.
+pub fn check_response(status: i32, body: &[u8]) -> ito_rs::Result<()> {
+	if is_challenge_page(body) {
+		return Err(ito_rs::Error::NeedsLogin(
+			"Open Asura Scans in the source browser to complete site verification".into(),
+		));
+	}
+	match status {
+		200..=299 => Ok(()),
+		401 => Err(ito_rs::Error::NeedsLogin(
+			"Sign in to Asura Scans in the source browser".into(),
+		)),
+		403 => Err(ito_rs::Error::Server("Asura Scans denied the request".into())),
+		404 => Err(ito_rs::Error::NotFound(
+			"Asura Scans could not find that page".into(),
+		)),
+		status => Err(ito_rs::Error::Server(format!(
+			"Asura Scans returned HTTP {status}"
+		))),
+	}
+}
+
+#[cfg(test)]
+mod tests {
+	use super::*;
+
+	#[test]
+	fn verification_pages_are_reported_as_needing_the_site() {
+		let challenge = b"<html><head><title>Just a moment...</title></head></html>";
+		assert!(matches!(
+			check_response(403, challenge),
+			Err(ito_rs::Error::NeedsLogin(_))
+		));
+		assert!(matches!(
+			check_response(200, challenge),
+			Err(ito_rs::Error::NeedsLogin(_))
+		));
+		assert!(matches!(
+			check_response(503, b"<script src='/cf-chl-x.js'></script>"),
+			Err(ito_rs::Error::NeedsLogin(_))
+		));
+	}
+
+	#[test]
+	fn refusals_and_missing_pages_keep_their_categories() {
+		assert!(check_response(200, b"<h1>Series</h1>").is_ok());
+		assert!(matches!(
+			check_response(403, b"<html>denied</html>"),
+			Err(ito_rs::Error::Server(_))
+		));
+		assert!(matches!(
+			check_response(404, b""),
+			Err(ito_rs::Error::NotFound(_))
+		));
+		assert!(matches!(
+			check_response(500, b""),
+			Err(ito_rs::Error::Server(_))
+		));
+	}
+}
