@@ -1,3 +1,5 @@
+use ito_rs::net::Request;
+
 pub const BASE_URL: &str = "https://asurascans.com";
 
 /// Returns the ID of a manga from a URL.
@@ -46,6 +48,24 @@ pub fn get_manga_url(manga_id: &str) -> String {
 /// Returns full URL of a chapter from a chapter ID and manga ID.
 pub fn get_chapter_url(chapter_id: &str, manga_id: &str) -> String {
 	format!("{BASE_URL}/comics/{manga_id}/chapter/{chapter_id}")
+}
+
+/// The headers every HTML page request carries. Asura Scans challenges `/comics/*` pages that ask
+/// for `*/*`, so pages ask for HTML the way a browser does. The User-Agent is left to the host.
+fn page_headers() -> [(&'static str, &'static str); 1] {
+	[(
+		"Accept",
+		"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+	)]
+}
+
+/// Builds a GET request for an HTML page of the site.
+pub fn page_request(url: &str) -> Request {
+	let mut request = Request::get(url);
+	for (name, value) in page_headers() {
+		request.header(name, value);
+	}
+	request
 }
 
 /// Recognises a Cloudflare verification page from its markers only; the body is never returned.
@@ -115,5 +135,16 @@ mod tests {
 			check_response(500, b""),
 			Err(ito_rs::Error::Server(_))
 		));
+	}
+
+	#[test]
+	fn page_requests_ask_for_html_and_leave_the_user_agent_to_the_host() {
+		let headers = page_headers();
+		assert!(headers
+			.iter()
+			.any(|(name, value)| *name == "Accept" && value.starts_with("text/html")));
+		assert!(headers
+			.iter()
+			.all(|(name, _)| !name.eq_ignore_ascii_case("user-agent")));
 	}
 }

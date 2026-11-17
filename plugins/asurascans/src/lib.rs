@@ -2,7 +2,6 @@ use ito_rs::export_manga_plugin;
 use ito_rs::provider::MangaProvider;
 use ito_rs::models::{Listing, FilterItem, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue, MangaWithChapter, Setting, SettingsSchema, LinkValue, ContentKind};
 use ito_rs::models::manga::{Manga, Chapter, PageResult, Status, ContentRating, Viewer};
-use ito_rs::net::Request;
 use ito_rs::html::Node;
 use ito_rs::Result;
 use ito_rs::defaults;
@@ -124,7 +123,7 @@ impl MangaProvider for AsuraScans {
     }
 
     fn get_home() -> Result<HomeLayout> {
-        let res = Request::get(BASE_URL).send()?;
+        let res = page_request(BASE_URL).send()?;
         let html = Node::new(&res.body);
         
         let mut components = Vec::new();
@@ -251,7 +250,7 @@ impl MangaProvider for AsuraScans {
             url.push_str(&format!("&q={}", query));
         }
 
-        let res = Request::get(url).send()?;
+        let res = page_request(&url).send()?;
         let html = Node::new(&res.body);
 
         let mut entries = Vec::new();
@@ -289,7 +288,7 @@ impl MangaProvider for AsuraScans {
 
     fn get_manga_update(mut manga: Manga, needs_details: bool, needs_chapters: bool) -> Result<Manga> {
         let url = get_manga_url(&manga.key);
-        let res = Request::get(&url).send()?;
+        let res = page_request(&url).send()?;
         if needs_details || needs_chapters {
             check_response(res.status, &res.body)?;
         }
@@ -372,7 +371,7 @@ impl MangaProvider for AsuraScans {
 
     fn get_page_list(manga: Manga, chapter: Chapter) -> Result<Vec<Page>> {
         let url = get_chapter_url(&chapter.key, &manga.key);
-        let res = Request::get(url).send()?;
+        let res = page_request(&url).send()?;
         check_response(res.status, &res.body)?;
         let html = Node::new(&res.body);
 
