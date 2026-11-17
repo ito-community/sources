@@ -66,10 +66,13 @@ pub fn locate(source: &str) -> Option<String> {
         .then(|| format!("https://{PROXY_HOST}/{host}{}{query}", parsed.path))
 }
 
-fn permitted(address: &str) -> Option<String> {
+/// The address as given when it is an https address on one of the site's image hosts, with a
+/// path and no other port. Anything else is refused and never fetched.
+pub fn permitted(address: &str) -> Option<String> {
     let parsed = url::parse_absolute(address)?;
     let allowed = parsed.https
         && parsed.port.is_none_or(|port| port == 443)
+        && parsed.path.starts_with('/')
         && (parsed.host == MEDIA_HOST || parsed.host == PROXY_HOST);
     allowed.then(|| address.trim().to_owned())
 }
@@ -87,6 +90,42 @@ mod tests {
                 "https://akira.templetoons.com"
             ]
         );
+    }
+
+    #[test]
+    fn page_requests_send_the_referrer_and_no_fetch_metadata() {
+        let headers = headers();
+        assert_eq!(headers.len(), 1);
+        assert_eq!(
+            headers.get("Referer").map(String::as_str),
+            Some("https://templetoons.com/")
+        );
+        // The image host refuses Sec-Fetch-Dest from clients that are not browsers.
+        assert!(
+            headers
+                .keys()
+                .all(|name| !name.to_ascii_lowercase().starts_with("sec-fetch-"))
+        );
+    }
+
+    #[test]
+    fn page_addresses_must_be_site_image_addresses_with_a_path() {
+        let page = "https://media.templetoons.com/file/b/uploads/series/s/c/01.jpg";
+        assert_eq!(permitted(page).as_deref(), Some(page));
+        assert_eq!(
+            permitted("https://akira.templetoons.com/x/01.jpg").as_deref(),
+            Some("https://akira.templetoons.com/x/01.jpg")
+        );
+        for refused in [
+            "https://media.templetoons.com?x=1",
+            "https://media.templetoons.com.evil.example/01.jpg",
+            "https://media.mediacloud.lat/01.jpg",
+            "https://imagizer.imageshack.com/01.jpg",
+            "http://media.templetoons.com/01.jpg",
+            "//media.templetoons.com/01.jpg",
+        ] {
+            assert_eq!(permitted(refused), None, "{refused}");
+        }
     }
 
     #[test]

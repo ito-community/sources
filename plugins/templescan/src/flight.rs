@@ -13,12 +13,14 @@ use crate::dom::Query;
 use ito_rs::Result;
 use scraper::Html;
 use serde_json::{Map, Value};
+use std::collections::HashMap;
 
 const PUSH: &str = "self.__next_f.push(";
 
-/// The decoded rows of one page.
+/// The decoded rows of one page: their data, and the module references its scripts load.
 pub struct Flight {
     rows: Vec<Value>,
+    modules: HashMap<String, Value>,
 }
 
 impl Flight {
@@ -28,14 +30,32 @@ impl Flight {
             let code: String = script.text().collect();
             append_chunks(&code, &mut payload);
         }
-        Ok(Flight {
-            rows: rows(&payload),
-        })
+        let (rows, modules) = parse_rows(&payload);
+        Ok(Flight { rows, modules })
     }
 
     /// The first object, in document order and depth first, that has every one of `keys`.
     pub fn find(&self, keys: &[&str]) -> Option<&Map<String, Value>> {
         self.rows.iter().find_map(|row| search(row, keys))
+    }
+
+    /// Every object, in document order and depth first, that has every one of `keys`.
+    pub fn all(&self, keys: &[&str]) -> Vec<&Map<String, Value>> {
+        let mut found = Vec::new();
+        for row in &self.rows {
+            collect(row, keys, &mut found);
+        }
+        found
+    }
+
+    /// The module reference row `id` names: `[module id, chunk paths..., export name]`.
+    pub fn module(&self, id: &str) -> Option<&Value> {
+        self.modules.get(id)
+    }
+
+    /// The id of the `$L<id>` element whose props object is `props`, as the page names it.
+    pub fn reference_of(&self, props: &Map<String, Value>) -> Option<&str> {
+        self.rows.iter().find_map(|row| reference(row, props))
     }
 }
 
@@ -60,30 +80,48 @@ fn append_chunks(script: &str, payload: &mut String) {
     }
 }
 
-/// Splits the payload into the JSON values of its rows.
+/// Splits the payload into its rows: the JSON value of each data row, and the module references
+/// keyed by their id.
 ///
 /// A row is `<hex id>:<value>`. Most rows end at a line break, but a text row is
 /// `<id>:T<hex byte length>,<that many bytes>` and the next row follows its last byte directly,
 /// so line breaks alone cannot separate rows: a page's data may come right after a text row
-/// (the page's structured-data notice is one) on the same line. Module references and hints
-/// have no JSON value; anything malformed is skipped without hiding the rows after it.
-fn rows(payload: &str) -> Vec<Value> {
+/// (the page's structured-data notice is one) on the same line. Hints have no JSON value;
+/// anything malformed is skipped without hiding the rows after it.
+fn parse_rows(payload: &str) -> (Vec<Value>, HashMap<String, Value>) {
     let mut values = Vec::new();
+    let mut modules = HashMap::new();
     let mut rest = payload;
     while !rest.is_empty() {
         match next_row(rest) {
-            Some((value, after)) => {
-                values.extend(value);
+            Some((row, after)) => {
+                match row {
+                    Row::Data(value) => values.push(value),
+                    Row::Module(id, value) => {
+                        modules.insert(id, value);
+                    }
+                    Row::Other => {}
+                }
                 rest = after;
             }
             None => rest = skip_line(rest),
         }
     }
-    values
+    (values, modules)
 }
 
-/// The row at the start of `text`: its JSON value, if it has one, and what follows the row.
-fn next_row(text: &str) -> Option<(Option<Value>, &str)> {
+/// One parsed row.
+enum Row {
+    /// A row whose JSON value is data.
+    Data(Value),
+    /// A module reference, `<id>:I[<module id>,<chunks>,<export>]`.
+    Module(String, Value),
+    /// A text chunk or hint row, which carries no JSON value.
+    Other,
+}
+
+/// The row at the start of `text`, and what follows the row.
+fn next_row(text: &str) -> Option<(Row, &str)> {
     let (id, body) = text.split_once(':')?;
     if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
@@ -92,16 +130,26 @@ fn next_row(text: &str) -> Option<(Option<Value>, &str)> {
         'T' => {
             let (length, content) = body[1..].split_once(',')?;
             let length = usize::from_str_radix(length, 16).ok()?;
-            Some((None, content.get(length..)?))
+            Some((Row::Other, content.get(length..)?))
         }
-        tag if tag.is_ascii_uppercase() => Some((None, skip_line(body))),
+        'I' => {
+            let (value, after) = json_value(&body[1..])?;
+            Some((Row::Module(id.to_owned(), value), after))
+        }
+        tag if tag.is_ascii_uppercase() => Some((Row::Other, skip_line(body))),
         _ => {
-            let mut stream = serde_json::Deserializer::from_str(body).into_iter::<Value>();
-            let value = stream.next()?.ok()?;
-            let after = &body[stream.byte_offset()..];
-            Some((Some(value), after.strip_prefix('\n').unwrap_or(after)))
+            let (value, after) = json_value(body)?;
+            Some((Row::Data(value), after))
         }
     }
+}
+
+/// The JSON value at the start of `text`, and the text after its line.
+fn json_value(text: &str) -> Option<(Value, &str)> {
+    let mut stream = serde_json::Deserializer::from_str(text).into_iter::<Value>();
+    let value = stream.next()?.ok()?;
+    let after = &text[stream.byte_offset()..];
+    Some((value, after.strip_prefix('\n').unwrap_or(after)))
 }
 
 fn skip_line(text: &str) -> &str {
@@ -117,6 +165,50 @@ fn search<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a Map<String, Value>>
             map.values().find_map(|child| search(child, keys))
         }
         Value::Array(items) => items.iter().find_map(|child| search(child, keys)),
+        _ => None,
+    }
+}
+
+/// Adds to `found` every object in `value` that has every one of `keys`, depth first.
+fn collect<'a>(value: &'a Value, keys: &[&str], found: &mut Vec<&'a Map<String, Value>>) {
+    match value {
+        Value::Object(map) => {
+            if keys.iter().all(|key| map.contains_key(*key)) {
+                found.push(map);
+            }
+            for child in map.values() {
+                collect(child, keys, found);
+            }
+        }
+        Value::Array(items) => {
+            for child in items {
+                collect(child, keys, found);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The id of the `$L<id>` element in `value` whose props object is `props`. An element is
+/// `["$", "$L<id>", key, props]`.
+fn reference<'a>(value: &'a Value, props: &Map<String, Value>) -> Option<&'a str> {
+    match value {
+        Value::Array(items) => {
+            if let [
+                Value::String(marker),
+                Value::String(name),
+                _,
+                Value::Object(found),
+            ] = items.as_slice()
+                && marker == "$"
+                && std::ptr::eq(found, props)
+                && let Some(id) = name.strip_prefix("$L")
+            {
+                return Some(id);
+            }
+            items.iter().find_map(|child| reference(child, props))
+        }
+        Value::Object(map) => map.values().find_map(|child| reference(child, props)),
         _ => None,
     }
 }
@@ -224,6 +316,26 @@ mod tests {
 
     fn flight(html: &str) -> Flight {
         Flight::from_document(&dom::parse(html)).expect("flight")
+    }
+
+    #[test]
+    fn module_references_and_the_elements_that_name_them_are_found() {
+        let html = format!(
+            "<body>{}</body>",
+            script(&[
+                "2c:I[44083,[\"7699\",\"static/chunks/a.js\",\"6969\",\"static/chunks/app/x/page-1.js\"],\"default\"]\n",
+                "c:[[\"$\",\"$L2c\",null,{\"layoutHints\":[null],\"k\":[\"a\"]}]]\n",
+            ])
+        );
+        let flight = flight(&html);
+        let props = flight.find(&["layoutHints"]).expect("props");
+        assert_eq!(flight.reference_of(props), Some("2c"));
+        let module = flight.module("2c").expect("module");
+        assert_eq!(module[0], serde_json::json!(44083));
+        assert_eq!(module[1][3], "static/chunks/app/x/page-1.js");
+        assert!(flight.module("c").is_none());
+        assert_eq!(flight.all(&["layoutHints"]).len(), 1);
+        assert!(flight.reference_of(&Map::new()).is_none());
     }
 
     #[test]

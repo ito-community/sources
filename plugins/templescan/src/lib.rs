@@ -20,6 +20,7 @@ mod reader;
 mod search;
 mod site;
 mod time;
+mod tokens;
 mod url;
 mod web;
 
@@ -241,7 +242,7 @@ fn chapter_pages<S: Site>(entry: MediaEntry, chapter: Chapter) -> Result<Vec<Pag
         url::encode(&manga.key),
         url::encode(&chapter.key)
     ))?;
-    reader::pages(&doc)
+    reader::pages::<S>(&doc)
 }
 
 /// A pasted site address opens the series it belongs to, whether it names the series or one of
