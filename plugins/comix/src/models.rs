@@ -49,7 +49,10 @@ pub struct Series {
     pub title: String,
     pub r#type: String,
     pub status: String,
-    pub content_rating: Rating,
+    /// Missing or null is read as `None`; an unrecognised rating as `Unknown`. Both are flagged
+    /// NSFW, so a rating the plugin does not know never shows as safe.
+    #[serde(default)]
+    pub content_rating: Option<Rating>,
     pub synopsis: Option<String>,
     pub poster: Option<Poster>,
     pub authors: Option<Vec<Term>>,
@@ -57,7 +60,8 @@ pub struct Series {
     pub genres: Option<Vec<Term>>,
 }
 
-/// The site's content ratings (spec section 5.1). An unknown rating fails the item.
+/// The site's content ratings (spec section 5.1). Anything other than the four known values is
+/// `Unknown`, which is flagged NSFW rather than failing the item.
 #[derive(Deserialize, Clone, Copy)]
 #[serde(rename_all = "lowercase")]
 pub enum Rating {
@@ -65,6 +69,8 @@ pub enum Rating {
     Suggestive,
     Erotica,
     Pornographic,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Deserialize)]
@@ -116,12 +122,15 @@ fn viewer(series_type: &str) -> Viewer {
     }
 }
 
-/// Erotica and pornographic series are the NSFW rating; the others are not.
-fn rating(value: Rating) -> (ContentRating, i32) {
+/// Erotica and pornographic series are the NSFW rating. A missing, null or unknown rating is
+/// flagged NSFW as well: the plugin fails closed on what it cannot classify, and keeps the item.
+fn rating(value: Option<Rating>) -> (ContentRating, i32) {
     match value {
-        Rating::Safe => (ContentRating::Safe, 0),
-        Rating::Suggestive => (ContentRating::Suggestive, 0),
-        Rating::Erotica | Rating::Pornographic => (ContentRating::Nsfw, 1),
+        Some(Rating::Safe) => (ContentRating::Safe, 0),
+        Some(Rating::Suggestive) => (ContentRating::Suggestive, 0),
+        Some(Rating::Erotica | Rating::Pornographic | Rating::Unknown) | None => {
+            (ContentRating::Nsfw, 1)
+        }
     }
 }
 
@@ -249,9 +258,9 @@ impl ChapterPages {
             .enumerate()
             .map(|(index, item)| {
                 let url = format!("{prefix}{}", item.url);
-                if !(url.starts_with("https://") || url.starts_with("http://")) {
+                if !url.starts_with("https://") {
                     return Err(Error::Server(
-                        "Comix returned a page address that is not absolute".into(),
+                        "Comix returned a page address that is not https".into(),
                     ));
                 }
                 Ok(Page {
@@ -311,23 +320,32 @@ mod tests {
             .is_err(),
             "a series without a title must fail rather than default"
         );
-        assert!(
-            serde_json::from_str::<Series>(
-                r#"{"hid":"stable-key","title":"T","type":"manga","status":"releasing"}"#,
-            )
-            .is_err(),
-            "a series without a content rating must fail rather than default"
-        );
     }
 
     #[test]
-    fn unknown_content_rating_fails_the_item() {
-        assert!(
-            serde_json::from_str::<Series>(
-                r#"{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":"gore"}"#,
-            )
-            .is_err()
-        );
+    fn unknown_missing_or_null_content_rating_is_flagged_nsfw() {
+        for json in [
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":"gore"}"#,
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":null}"#,
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing"}"#,
+        ] {
+            let series: Series = serde_json::from_str(json).expect("the item still decodes");
+            let manga = Manga::from(series);
+            assert!(matches!(manga.content_rating, ContentRating::Nsfw));
+            assert_eq!(manga.nsfw, 1);
+        }
+    }
+
+    #[test]
+    fn one_unknown_rating_does_not_fail_the_page() {
+        let page: Paged<Series> = serde_json::from_str(
+            r#"{"items":[{"hid":"a","title":"A","type":"manga","status":"releasing","contentRating":"gore"},{"hid":"b","title":"B","type":"manga","status":"releasing","contentRating":"safe"}],"meta":{"page":1,"lastPage":1}}"#,
+        )
+        .expect("the page decodes");
+        let entries = page.into_page_result(&[]).entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].nsfw, 1);
+        assert_eq!(entries[1].nsfw, 0);
     }
 
     #[test]
@@ -419,6 +437,14 @@ mod tests {
     fn relative_page_urls_are_refused() {
         let pages: ChapterPages =
             serde_json::from_str(r#"{"pages":[{"url":"/page.jpg"}]}"#).expect("pages decode");
+        assert!(pages.into_pages().is_err());
+    }
+
+    #[test]
+    fn http_page_addresses_are_refused_because_the_site_serves_https_only() {
+        let pages: ChapterPages =
+            serde_json::from_str(r#"{"pages":[{"url":"http://cdn.test/1.jpg"}]}"#)
+                .expect("pages decode");
         assert!(pages.into_pages().is_err());
     }
 

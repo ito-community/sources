@@ -11,8 +11,8 @@ use serde_json::Value;
 const KEY_RETIRED: &str = "Comix changed its request key. Update the Comix source to continue.";
 const SIGNING_REJECTED: &str =
     "Comix rejected the source's request signature. Update the Comix source to continue.";
-const VERIFICATION: &str = "Comix needs a verification before chapters can load. Sign in to Comix, open a series on its website and complete the verification it shows, then retry.";
-const BROWSER_CHECK: &str = "Comix needs a browser check before it will respond. Sign in to Comix, complete the check, then retry.";
+const VERIFICATION: &str = "Comix needs a verification before chapters can load. Open Comix in the browser and complete its verification check, then retry.";
+const BROWSER_CHECK: &str = "Comix needs a browser check before it will respond. Open Comix in the browser and complete its verification check, then retry.";
 const NOT_FOUND: &str = "Comix has no series or chapter with that id.";
 const REJECTED_PARAMETERS: &str = "Comix rejected the request parameters.";
 const FORBIDDEN: &str = "Comix refused the request.";
@@ -142,7 +142,7 @@ mod tests {
             .int("w", 0);
         assert_eq!(
             request_url("/manga/8v88/chapters", &query),
-            "https://comix.to/api/v1/manga/8v88/chapters?limit=20&order[number]=desc&page=1&v=0&w=0&_=etu.RrmtJju8KbY3vC6y"
+            "https://comix.to/api/v1/manga/8v88/chapters?limit=20&order%5Bnumber%5D=desc&page=1&v=0&w=0&_=etu.RrmtJju8KbY3vC6y"
         );
     }
 

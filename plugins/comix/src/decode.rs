@@ -21,7 +21,7 @@ const TABLE_START: usize = 64;
 pub enum DecodeError {
     /// The text is not base64 in either alphabet.
     Base64,
-    /// The payload is shorter than its two-byte rotation header and a byte of data.
+    /// The payload has fewer than four bytes: the two-byte rotation header and at least two data bytes.
     TooShort,
 }
 

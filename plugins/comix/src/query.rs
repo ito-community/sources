@@ -82,12 +82,19 @@ impl Query {
         message
     }
 
-    /// The URL query for these parameters, values percent-encoded and in the signed order. Empty
-    /// when there are no parameters.
+    /// The URL query for these parameters, names and values percent-encoded and in the signed
+    /// order. The signature covers the raw form, so the server sees the same parameters either way.
+    /// Empty when there are no parameters.
     pub fn encoded(&self) -> String {
         self.pairs()
             .iter()
-            .map(|(name, value)| format!("{name}={}", urlencoding::encode(value)))
+            .map(|(name, value)| {
+                format!(
+                    "{}={}",
+                    urlencoding::encode(name),
+                    urlencoding::encode(value)
+                )
+            })
             .collect::<Vec<_>>()
             .join("&")
     }
@@ -138,6 +145,22 @@ mod tests {
         assert_eq!(
             query.encoded(),
             "keyword=%E6%97%A5%E6%9C%AC%E8%AA%9E%20%26%20a%3Db&limit=1&page=1"
+        );
+    }
+
+    #[test]
+    fn url_names_are_percent_encoded_while_the_signed_message_stays_raw() {
+        let query = Query::new()
+            .list("content_rating", &["safe"])
+            .order("number", "desc")
+            .int("page", 1);
+        assert_eq!(
+            query.message("/manga/8v88/chapters"),
+            "/manga/8v88/chapters?content_rating[0]=safe&order[number]=desc&page=1"
+        );
+        assert_eq!(
+            query.encoded(),
+            "content_rating%5B0%5D=safe&order%5Bnumber%5D=desc&page=1"
         );
     }
 }

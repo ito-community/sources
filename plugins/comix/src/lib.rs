@@ -19,8 +19,9 @@ use query::Query;
 
 pub const BASE_URL: &str = "https://comix.to";
 
-/// Genres excluded while NSFW content is hidden.
-const NSFW_GENRE_IDS: &[&str] = &["87264", "8", "87265", "13", "87266", "87268"];
+/// Genres the site labels as adult: Adult (87264), Hentai (87266) and Smut (87268). Their series
+/// are almost all rated erotica or pornographic. Other genres are left to the content rating.
+const NSFW_GENRE_IDS: &[&str] = &["87264", "87266", "87268"];
 
 /// Chapters per page: the largest page the site accepts.
 const CHAPTER_PAGE_LIMIT: i32 = 100;
@@ -360,7 +361,7 @@ mod tests {
     fn hidden_content_is_excluded_by_rating_and_genre_parameters() {
         assert_eq!(
             with_content_filter(Query::new()).message("/manga"),
-            "/manga?content_rating[0]=safe&content_rating[1]=suggestive&genres_ex[0]=87264&genres_ex[1]=8&genres_ex[2]=87265&genres_ex[3]=13&genres_ex[4]=87266&genres_ex[5]=87268"
+            "/manga?content_rating[0]=safe&content_rating[1]=suggestive&genres_ex[0]=87264&genres_ex[1]=87266&genres_ex[2]=87268"
         );
     }
 
