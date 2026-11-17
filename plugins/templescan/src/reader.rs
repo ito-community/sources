@@ -15,7 +15,9 @@ use ito_rs::{Error, Result};
 use scraper::Html;
 use serde_json::Value;
 
-/// The most script text the reader module is searched in. Far above any build's script.
+/// The most script text the reader module is searched in. The web view buffers a reply whole
+/// before the source sees it, so the SDK offers no way to bound the read; this is a sanity check
+/// after the read, refusing an oversized script before it is searched.
 const MAX_SCRIPT_BYTES: usize = 2 * 1024 * 1024;
 
 /// What a chapter page offers a reader.
@@ -149,14 +151,32 @@ impl Script {
 }
 
 /// Whether `path` is a script of the site's build: under `static/chunks/`, a `.js` file, with
-/// only characters a build path uses and nothing that could leave the directory.
+/// nothing that could leave the directory. A `%` may only begin the bracket escapes `%5B` and
+/// `%5D` that the site's dynamic route names use; every other byte is a plain path character.
 fn chunk_path_ok(path: &str) -> bool {
     path.starts_with("static/chunks/")
         && path.ends_with(".js")
         && !path.contains("..")
-        && path
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || b"/._-()%".contains(&byte))
+        && escapes_ok(path)
+}
+
+/// Whether every `%` in `path` starts `%5B` or `%5D`, and every other byte is a plain path
+/// character.
+fn escapes_ok(path: &str) -> bool {
+    let mut bytes = path.bytes();
+    while let Some(byte) = bytes.next() {
+        match byte {
+            b'%' => {
+                let escape = [bytes.next(), bytes.next()];
+                if escape != [Some(b'5'), Some(b'B')] && escape != [Some(b'5'), Some(b'D')] {
+                    return false;
+                }
+            }
+            _ if byte.is_ascii_alphanumeric() || b"/._-()".contains(&byte) => {}
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// Every token decoded under `seed` as a page address, in list order; `None` when any of them is
@@ -191,6 +211,7 @@ fn recovered<S: Site>(reader: &Reader) -> Result<Option<Vec<String>>> {
             )));
         }
     }
+    // A sanity check after the read: the whole body is already in memory by this point.
     if reply.body.len() > MAX_SCRIPT_BYTES {
         return Ok(None);
     }
@@ -572,5 +593,21 @@ pub(crate) mod tests {
         assert!(!chunk_path_ok("static/chunks/../x.js"));
         assert!(!chunk_path_ok("static/chunks/x.js?v=1"));
         assert!(!chunk_path_ok("static/css/x.js"));
+        // Only the bracket escapes of dynamic route names are percent-encoded.
+        assert!(chunk_path_ok(
+            "static/chunks/app/%5Bslug%5D/%5Bch_slug%5D/page-a.js"
+        ));
+        assert!(chunk_path_ok("static/chunks/app/%5B%5D/x.js"));
+        for escaped in [
+            "static/chunks/a%2e%2e/x.js",
+            "static/chunks/%2e/x.js",
+            "static/chunks/%%5B5D.js",
+            "static/chunks/%5b/x.js",
+            "static/chunks/%5/x.js",
+            "static/chunks/x%",
+            "static/chunks/%20x.js",
+        ] {
+            assert!(!chunk_path_ok(escaped), "{escaped}");
+        }
     }
 }
