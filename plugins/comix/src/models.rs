@@ -7,20 +7,22 @@ use ito_rs::models::{ContentKind, Page, PageContent, Scanlator};
 use ito_rs::{Error, Result};
 use serde::Deserialize;
 
-/// One page of a site listing, normalized by the bridge from the site's `{t9, zV}` envelope.
+/// One page of a listing: `{"items": [...], "meta": {...}}` after the envelope is unwrapped.
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Paged<T> {
     pub items: Vec<T>,
     pub meta: PageMeta,
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PageMeta {
     pub page: i32,
     pub last_page: i32,
 }
 
-impl Paged<ComixManga> {
+impl Paged<Series> {
     pub fn into_page_result(self, hidden_types: &[String]) -> PageResult {
         let has_next_page = self.meta.page < self.meta.last_page;
         PageResult {
@@ -30,95 +32,159 @@ impl Paged<ComixManga> {
     }
 }
 
-/// Converts manga summaries and drops hidden entries. Top lists carry no page metadata.
-pub fn visible(items: Vec<ComixManga>, hidden_types: &[String]) -> Vec<Manga> {
+/// Converts series summaries and drops hidden entries. Top lists carry no page metadata.
+pub fn visible(items: Vec<Series>, hidden_types: &[String]) -> Vec<Manga> {
     items
         .into_iter()
-        .filter(|manga| !manga.is_hidden(hidden_types))
+        .filter(|series| !hidden_types.contains(&series.r#type))
         .map(Manga::from)
         .collect()
 }
 
+/// A series as listings and detail return it. Detail-only lists are absent from listings.
 #[derive(Deserialize)]
-pub struct ComixManga {
-    pub hash_id: String,
+#[serde(rename_all = "camelCase")]
+pub struct Series {
+    pub hid: String,
     pub title: String,
-    pub synopsis: Option<String>,
     pub r#type: String,
-    pub poster: Option<Poster>,
     pub status: String,
-    pub latest_chapter: Option<f32>,
-    pub author: Option<Vec<Term>>,
-    pub artist: Option<Vec<Term>>,
-    pub genre: Option<Vec<Term>>,
+    /// Missing or null is read as `None`; an unrecognised rating as `Unknown`. Both are flagged
+    /// NSFW, so a rating the plugin does not know never shows as safe.
+    #[serde(default)]
+    pub content_rating: Option<Rating>,
+    pub synopsis: Option<String>,
+    pub poster: Option<Poster>,
+    pub authors: Option<Vec<Term>>,
+    pub artists: Option<Vec<Term>>,
+    pub genres: Option<Vec<Term>>,
 }
 
-impl ComixManga {
-    pub fn is_hidden(&self, hidden_types: &[String]) -> bool {
-        hidden_types.contains(&self.r#type)
+/// The site's content ratings (spec section 5.1). Anything other than the four known values is
+/// `Unknown`, which is flagged NSFW rather than failing the item.
+#[derive(Deserialize, Clone, Copy)]
+#[serde(rename_all = "lowercase")]
+pub enum Rating {
+    Safe,
+    Suggestive,
+    Erotica,
+    Pornographic,
+    #[serde(other)]
+    Unknown,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Poster {
+    pub medium: Option<String>,
+    pub large: Option<String>,
+}
+
+#[derive(Deserialize)]
+pub struct Term {
+    pub title: String,
+}
+
+/// Site paths are relative to the site origin; anything already absolute is kept.
+fn absolute_url(path: &str) -> String {
+    if path.starts_with("https://") || path.starts_with("http://") {
+        path.to_owned()
+    } else {
+        format!("{BASE_URL}{path}")
     }
 }
 
-impl From<ComixManga> for Manga {
-    fn from(value: ComixManga) -> Self {
-        let url = format!("{}/title/{}", BASE_URL, value.hash_id);
+fn cover(poster: Option<Poster>) -> Option<String> {
+    let poster = poster?;
+    let path = match settings::image_quality().as_str() {
+        "medium" => poster.medium.or(poster.large),
+        "large" => poster.large.or(poster.medium),
+        _ => None,
+    };
+    path.map(|path| absolute_url(&path))
+}
+
+fn status(value: &str) -> MangaStatus {
+    match value {
+        "releasing" => MangaStatus::Ongoing,
+        "on_hiatus" => MangaStatus::Hiatus,
+        "finished" => MangaStatus::Completed,
+        "discontinued" => MangaStatus::Cancelled,
+        _ => MangaStatus::Unknown,
+    }
+}
+
+fn viewer(series_type: &str) -> Viewer {
+    match series_type {
+        "manhwa" | "manhua" => Viewer::Webtoon,
+        "manga" => Viewer::Rtl,
+        _ => Viewer::Default,
+    }
+}
+
+/// Erotica and pornographic series are the NSFW rating. A missing, null or unknown rating is
+/// flagged NSFW as well: the plugin fails closed on what it cannot classify, and keeps the item.
+fn rating(value: Option<Rating>) -> (ContentRating, i32) {
+    match value {
+        Some(Rating::Safe) => (ContentRating::Safe, 0),
+        Some(Rating::Suggestive) => (ContentRating::Suggestive, 0),
+        Some(Rating::Erotica | Rating::Pornographic | Rating::Unknown) | None => {
+            (ContentRating::Nsfw, 1)
+        }
+    }
+}
+
+impl From<Series> for Manga {
+    fn from(value: Series) -> Self {
+        let url = format!("{BASE_URL}/title/{}", value.hid);
+        let (content_rating, nsfw) = rating(value.content_rating);
+        let status = status(&value.status);
+        let viewer = viewer(&value.r#type);
         Self {
-            key: value.hash_id,
+            key: value.hid,
             title: value.title,
-            cover: value
-                .poster
-                .and_then(|poster| match settings::image_quality().as_str() {
-                    "small" => poster.small.or(poster.medium).or(poster.large),
-                    "medium" => poster.medium.or(poster.large).or(poster.small),
-                    "large" => poster.large.or(poster.medium).or(poster.small),
-                    _ => None,
-                }),
-            artist: value.artist.map(|v| {
+            cover: cover(value.poster),
+            artist: value.artists.map(|v| {
                 v.into_iter()
                     .map(|t| t.title)
                     .collect::<Vec<_>>()
                     .join(", ")
             }),
             authors: value
-                .author
+                .authors
                 .map(|v| v.into_iter().map(|t| t.title).collect()),
             description: value.synopsis,
             url: Some(url),
             tags: value
-                .genre
+                .genres
                 .map(|v| v.into_iter().map(|t| t.title).collect()),
-            status: match value.status.as_str() {
-                "releasing" => MangaStatus::Ongoing,
-                "on_hiatus" => MangaStatus::Hiatus,
-                "finished" => MangaStatus::Completed,
-                "discontinued" => MangaStatus::Cancelled,
-                _ => MangaStatus::Unknown,
-            },
-            // The site DTO exposes `contentRating` with no verified vocabulary, so no NSFW
-            // flag is derived from it. Hidden genres are still excluded server-side.
-            content_rating: ContentRating::Safe,
-            nsfw: 0,
-            viewer: match value.r#type.as_str() {
-                "manhwa" => Viewer::Webtoon,
-                "manhua" => Viewer::Webtoon,
-                "manga" => Viewer::Rtl,
-                _ => Viewer::Default,
-            },
+            status,
+            content_rating,
+            nsfw,
+            viewer,
             chapters: None,
             catalog: None,
         }
     }
 }
 
+/// One upload of a chapter. Several uploads can share a number.
 #[derive(Deserialize, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct ComixChapter {
-    pub chapter_id: i32,
-    pub scanlation_group_id: Option<i32>,
+    pub id: i32,
     pub number: f64,
     pub name: Option<String>,
     pub votes: i32,
     pub is_official: bool,
-    pub scanlation_group: Option<ScanlationGroup>,
+    /// Zero means the site does not know the group.
+    pub group_id: Option<i32>,
+    pub group: Option<ScanlationGroup>,
+}
+
+#[derive(Deserialize, Clone)]
+pub struct ScanlationGroup {
+    pub name: Option<String>,
 }
 
 impl ComixChapter {
@@ -131,11 +197,8 @@ impl ComixChapter {
             title,
             chapter: chapter_number(self.number),
             scanlator,
-            url: Some(format!(
-                "{}/title/{}/{}",
-                BASE_URL, manga_id, self.chapter_id
-            )),
-            ..Chapter::new(self.chapter_id.to_string(), ContentKind::Images)
+            url: Some(format!("{BASE_URL}/title/{manga_id}/{}", self.id)),
+            ..Chapter::new(self.id.to_string(), ContentKind::Images)
         }
     }
 
@@ -143,11 +206,7 @@ impl ComixChapter {
     /// identifier has not been verified for this site. A chapter without a usable group name is
     /// "Official" when the site flags it as official, and otherwise has no group.
     fn scanlator(&self) -> Option<Scanlator> {
-        match self
-            .scanlation_group
-            .as_ref()
-            .map(|group| group.name.as_str())
-        {
+        match self.group.as_ref().and_then(|group| group.name.as_deref()) {
             Some(name) if is_valid_scanlator_name(name) => Some(Scanlator::named(name)),
             _ if self.is_official => Some(Scanlator::named("Official")),
             _ => None,
@@ -165,30 +224,48 @@ fn is_valid_scanlator_name(name: &str) -> bool {
     !name.is_empty() && name.len() <= MAX_SCANLATOR_NAME_BYTES
 }
 
-/// Page images of one chapter. Each URL is already absolute: the bridge resolves it
-/// against the page, exactly as the site's own image elements would.
+/// The `result` of a sealed chapter response; only its page list is read here.
 #[derive(Deserialize)]
 pub struct ChapterPages {
-    pub images: Vec<PageImage>,
+    pub pages: PageList,
+}
+
+/// Page images of one chapter, either as an object with an optional URL prefix or as a bare list.
+#[derive(Deserialize)]
+#[serde(untagged)]
+pub enum PageList {
+    #[serde(rename_all = "camelCase")]
+    Object {
+        base_url: Option<String>,
+        items: Vec<PageItem>,
+    },
+    Items(Vec<PageItem>),
 }
 
 #[derive(Deserialize)]
-pub struct PageImage {
+pub struct PageItem {
     pub url: String,
 }
 
 impl ChapterPages {
     pub fn into_pages(self) -> Result<Vec<Page>> {
-        self.images
+        let (prefix, items) = match self.pages {
+            PageList::Object { base_url, items } => (base_url.unwrap_or_default(), items),
+            PageList::Items(items) => (String::new(), items),
+        };
+        items
             .into_iter()
             .enumerate()
-            .map(|(index, image)| {
-                if !(image.url.starts_with("https://") || image.url.starts_with("http://")) {
-                    return Err(Error::Host("Comix page URL is not absolute".into()));
+            .map(|(index, item)| {
+                let url = format!("{prefix}{}", item.url);
+                if !url.starts_with("https://") {
+                    return Err(Error::Server(
+                        "Comix returned a page address that is not https".into(),
+                    ));
                 }
                 Ok(Page {
                     index: index as i32,
-                    content: PageContent::Url(image.url),
+                    content: PageContent::Url(url),
                     has_description: false,
                     description: None,
                     headers: None,
@@ -198,62 +275,109 @@ impl ChapterPages {
     }
 }
 
-#[derive(Deserialize)]
-pub struct Poster {
-    pub small: Option<String>,
-    pub medium: Option<String>,
-    pub large: Option<String>,
-}
-
-#[derive(Deserialize)]
-pub struct Term {
-    pub title: String,
-}
-
-#[derive(Deserialize, Clone)]
-pub struct ScanlationGroup {
-    pub name: String,
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn paged_envelope_reports_next_page_from_page_metadata() {
-        let page: Paged<ComixManga> =
-            serde_json::from_str(r#"{"items":[],"meta":{"page":2,"last_page":3}}"#)
-                .expect("normalized page decodes");
+        let page: Paged<Series> =
+            serde_json::from_str(r#"{"items":[],"meta":{"page":2,"lastPage":3}}"#)
+                .expect("page decodes");
         assert!(page.into_page_result(&[]).has_next_page);
     }
 
     #[test]
     fn last_page_has_no_next_page() {
-        let page: Paged<ComixManga> =
-            serde_json::from_str(r#"{"items":[],"meta":{"page":3,"last_page":3}}"#)
-                .expect("normalized page decodes");
+        let page: Paged<Series> =
+            serde_json::from_str(r#"{"items":[],"meta":{"page":3,"lastPage":3}}"#)
+                .expect("page decodes");
         assert!(!page.into_page_result(&[]).has_next_page);
     }
 
     #[test]
-    fn manga_summary_decodes_with_absent_detail_fields() {
-        let manga: ComixManga = serde_json::from_str(
-            r#"{"hash_id":"stable-key","title":"Fixture","type":"manga","status":"releasing","synopsis":null,"latest_chapter":null,"poster":null}"#,
+    fn series_summary_decodes_with_absent_detail_fields() {
+        let series: Series = serde_json::from_str(
+            r#"{"hid":"stable-key","title":"Fixture","type":"manga","status":"releasing","contentRating":"safe","synopsis":null,"poster":null}"#,
         )
         .expect("summary decodes");
-        let manga = Manga::from(manga);
+        let manga = Manga::from(series);
         assert_eq!(manga.key, "stable-key");
+        assert_eq!(
+            manga.url.as_deref(),
+            Some("https://comix.to/title/stable-key")
+        );
         assert!(manga.authors.is_none());
+        assert!(manga.tags.is_none());
     }
 
     #[test]
-    fn required_manga_fields_are_not_defaulted() {
+    fn required_series_fields_are_not_defaulted() {
         assert!(
-            serde_json::from_str::<ComixManga>(
-                r#"{"hash_id":"stable-key","type":"manga","status":"releasing","poster":null}"#,
+            serde_json::from_str::<Series>(
+                r#"{"hid":"stable-key","type":"manga","status":"releasing","contentRating":"safe"}"#,
             )
             .is_err(),
-            "a summary without a title must fail rather than default"
+            "a series without a title must fail rather than default"
+        );
+    }
+
+    #[test]
+    fn unknown_missing_or_null_content_rating_is_flagged_nsfw() {
+        for json in [
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":"gore"}"#,
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":null}"#,
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing"}"#,
+        ] {
+            let series: Series = serde_json::from_str(json).expect("the item still decodes");
+            let manga = Manga::from(series);
+            assert!(matches!(manga.content_rating, ContentRating::Nsfw));
+            assert_eq!(manga.nsfw, 1);
+        }
+    }
+
+    #[test]
+    fn one_unknown_rating_does_not_fail_the_page() {
+        let page: Paged<Series> = serde_json::from_str(
+            r#"{"items":[{"hid":"a","title":"A","type":"manga","status":"releasing","contentRating":"gore"},{"hid":"b","title":"B","type":"manga","status":"releasing","contentRating":"safe"}],"meta":{"page":1,"lastPage":1}}"#,
+        )
+        .expect("the page decodes");
+        let entries = page.into_page_result(&[]).entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].nsfw, 1);
+        assert_eq!(entries[1].nsfw, 0);
+    }
+
+    #[test]
+    fn erotica_and_pornographic_are_nsfw_and_suggestive_is_not() {
+        let series = |rating: &str| -> Manga {
+            let json = format!(
+                r#"{{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":"{rating}"}}"#
+            );
+            Manga::from(serde_json::from_str::<Series>(&json).expect("series decodes"))
+        };
+        let erotica = series("erotica");
+        assert!(matches!(erotica.content_rating, ContentRating::Nsfw));
+        assert_eq!(erotica.nsfw, 1);
+        let pornographic = series("pornographic");
+        assert!(matches!(pornographic.content_rating, ContentRating::Nsfw));
+        let suggestive = series("suggestive");
+        assert!(matches!(
+            suggestive.content_rating,
+            ContentRating::Suggestive
+        ));
+        assert_eq!(suggestive.nsfw, 0);
+    }
+
+    #[test]
+    fn relative_cover_paths_become_site_urls() {
+        let series: Series = serde_json::from_str(
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":"safe","poster":{"medium":"/images/covers/a.jpg","large":"/images/covers/b.jpg"}}"#,
+        )
+        .expect("series decodes");
+        assert_eq!(
+            Manga::from(series).cover.as_deref(),
+            Some("https://comix.to/images/covers/a.jpg")
         );
     }
 
@@ -261,7 +385,7 @@ mod tests {
     fn chapter_requires_the_official_flag() {
         assert!(
             serde_json::from_str::<ComixChapter>(
-                r#"{"chapter_id":1,"number":1.0,"name":null,"votes":0,"scanlation_group":null}"#,
+                r#"{"id":1,"number":1.0,"name":null,"votes":0,"groupId":null,"group":null}"#,
             )
             .is_err(),
             "a chapter without isOfficial must fail rather than default"
@@ -271,54 +395,80 @@ mod tests {
     #[test]
     fn empty_chapter_name_is_not_a_title() {
         let chapter: ComixChapter = serde_json::from_str(
-            r#"{"chapter_id":7,"scanlation_group_id":null,"number":2.0,"name":"","votes":0,"is_official":false,"scanlation_group":null}"#,
+            r#"{"id":7,"groupId":null,"number":2.0,"name":"","votes":0,"isOfficial":false,"group":null}"#,
         )
         .expect("chapter decodes");
         assert!(chapter.into_chapter("hid").title.is_none());
     }
 
     #[test]
-    fn absolute_page_urls_keep_their_order() {
-        let pages: ChapterPages = serde_json::from_str(
-            r#"{"images":[{"url":"https://cdn.test/1.jpg"},{"url":"https://cdn.test/2.jpg"}]}"#,
+    fn absolute_page_urls_keep_their_order_in_both_shapes() {
+        let object: ChapterPages = serde_json::from_str(
+            r#"{"pages":{"alt":["x.test"],"items":[{"url":"https://cdn.test/1.jpg","width":800,"height":1200},{"url":"https://cdn.test/2.jpg"}]}}"#,
         )
-        .expect("pages decode");
-        let pages = pages.into_pages().expect("absolute URLs are accepted");
+        .expect("object pages decode");
+        let pages = object.into_pages().expect("absolute URLs are accepted");
         assert_eq!(pages.len(), 2);
         assert!(matches!(
             &pages[1].content,
             PageContent::Url(url) if url == "https://cdn.test/2.jpg"
         ));
+
+        let bare: ChapterPages =
+            serde_json::from_str(r#"{"pages":[{"url":"https://cdn.test/a.jpg"}]}"#)
+                .expect("bare pages decode");
+        assert_eq!(bare.into_pages().expect("bare pages").len(), 1);
     }
 
     #[test]
-    fn relative_page_urls_are_refused_by_the_host_side() {
+    fn base_url_prefixes_page_urls() {
+        let pages: ChapterPages = serde_json::from_str(
+            r#"{"pages":{"baseUrl":"https://cdn.test/","items":[{"url":"1.jpg"}]}}"#,
+        )
+        .expect("pages decode");
+        let pages = pages.into_pages().expect("prefixed URL is absolute");
+        assert!(matches!(
+            &pages[0].content,
+            PageContent::Url(url) if url == "https://cdn.test/1.jpg"
+        ));
+    }
+
+    #[test]
+    fn relative_page_urls_are_refused() {
         let pages: ChapterPages =
-            serde_json::from_str(r#"{"images":[{"url":"/page.jpg"}]}"#).expect("pages decode");
+            serde_json::from_str(r#"{"pages":[{"url":"/page.jpg"}]}"#).expect("pages decode");
+        assert!(pages.into_pages().is_err());
+    }
+
+    #[test]
+    fn http_page_addresses_are_refused_because_the_site_serves_https_only() {
+        let pages: ChapterPages =
+            serde_json::from_str(r#"{"pages":[{"url":"http://cdn.test/1.jpg"}]}"#)
+                .expect("pages decode");
         assert!(pages.into_pages().is_err());
     }
 
     #[test]
     fn null_or_absent_term_lists_decode_as_none() {
         for json in [
-            r#"{"hash_id":"stable-key","title":"Fixture","type":"manga","status":"releasing","poster":null,"author":null,"artist":null,"genre":null}"#,
-            r#"{"hash_id":"stable-key","title":"Fixture","type":"manga","status":"releasing","poster":null}"#,
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":"safe","authors":null,"artists":null,"genres":null}"#,
+            r#"{"hid":"h","title":"T","type":"manga","status":"releasing","contentRating":"safe"}"#,
         ] {
-            let manga: ComixManga = serde_json::from_str(json).expect("detail term lists decode");
-            assert!(manga.author.is_none());
-            assert!(manga.artist.is_none());
-            assert!(manga.genre.is_none());
+            let series: Series = serde_json::from_str(json).expect("detail term lists decode");
+            assert!(series.authors.is_none());
+            assert!(series.artists.is_none());
+            assert!(series.genres.is_none());
         }
     }
 
-    /// Representative normalized chapter page. Synthetic: shaped like the bridge's chapter output,
-    /// not captured from the site. Pins the keys, titles, numbers, URLs and group names a port keeps.
+    /// Representative chapter page. Synthetic: shaped like the site's chapter list, not captured
+    /// from it. Pins the keys, titles, numbers, URLs and group names a port keeps.
     const CHAPTER_PAGE: &str = r#"{"items":[
-        {"chapter_id":101,"scanlation_group_id":null,"number":1.0,"name":"Opening","votes":12,"is_official":true,"scanlation_group":null},
-        {"chapter_id":102,"scanlation_group_id":9,"number":1.5,"name":"","votes":3,"is_official":false,"scanlation_group":{"name":"Group Nine"}},
-        {"chapter_id":103,"scanlation_group_id":10702,"number":2.0,"name":null,"votes":0,"is_official":true,"scanlation_group":{"name":"Site Team"}},
-        {"chapter_id":104,"scanlation_group_id":null,"number":10.25,"name":"Ten","votes":1,"is_official":false,"scanlation_group":null}
-    ],"meta":{"page":1,"last_page":1}}"#;
+        {"id":101,"groupId":null,"number":1.0,"name":"Opening","votes":12,"isOfficial":true,"group":null},
+        {"id":102,"groupId":9,"number":1.5,"name":"","votes":3,"isOfficial":false,"group":{"name":"Group Nine"}},
+        {"id":103,"groupId":10702,"number":2.0,"name":null,"votes":0,"isOfficial":true,"group":{"name":"Site Team"}},
+        {"id":104,"groupId":null,"number":10.25,"name":"Ten","votes":1,"isOfficial":false,"group":null}
+    ],"meta":{"page":1,"lastPage":1}}"#;
 
     /// The group name a serialized chapter reports, whichever shape its scanlator is written in.
     fn group_name(chapter: &serde_json::Value) -> Option<&str> {
@@ -367,17 +517,19 @@ mod tests {
     fn chapter(
         number: f64,
         name: Option<String>,
-        group: Option<&str>,
+        group: Option<Option<&str>>,
         is_official: bool,
     ) -> ComixChapter {
         ComixChapter {
-            chapter_id: 7,
-            scanlation_group_id: None,
+            id: 7,
+            group_id: None,
             number,
             name,
             votes: 0,
             is_official,
-            scanlation_group: group.map(|name| ScanlationGroup { name: name.into() }),
+            group: group.map(|name| ScanlationGroup {
+                name: name.map(str::to_owned),
+            }),
         }
     }
 
@@ -403,43 +555,45 @@ mod tests {
 
     #[test]
     fn empty_or_oversized_group_names_are_not_used() {
-        let empty = chapter(1.0, None, Some(""), false).into_chapter("hid");
+        let empty = chapter(1.0, None, Some(Some("")), false).into_chapter("hid");
         assert!(empty.scanlator.is_none());
         let oversized_name = "g".repeat(MAX_SCANLATOR_NAME_BYTES + 1);
-        let oversized = chapter(1.0, None, Some(oversized_name.as_str()), false);
+        let oversized = chapter(1.0, None, Some(Some(oversized_name.as_str())), false);
         assert!(oversized.into_chapter("hid").scanlator.is_none());
-        let official = chapter(1.0, None, Some(""), true).into_chapter("hid");
-        assert_eq!(official.scanlator, Some(Scanlator::named("Official")),);
+        let official = chapter(1.0, None, Some(Some("")), true).into_chapter("hid");
+        assert_eq!(official.scanlator, Some(Scanlator::named("Official")));
+        let unnamed = chapter(1.0, None, Some(None), false).into_chapter("hid");
+        assert!(unnamed.scanlator.is_none());
     }
 
     #[test]
     fn a_group_is_named_without_a_source_id() {
-        let chapter = chapter(1.0, None, Some("Group Nine"), false).into_chapter("hid");
+        let chapter = chapter(1.0, None, Some(Some("Group Nine")), false).into_chapter("hid");
         assert_eq!(chapter.scanlator, Some(Scanlator::named("Group Nine")));
     }
 
     #[test]
     fn same_number_uploads_keep_distinct_chapter_ids_and_group_relationships() {
         let alpha = ComixChapter {
-            chapter_id: 21,
-            scanlation_group_id: Some(11),
+            id: 21,
+            group_id: Some(11),
             number: 4.0,
             name: None,
             votes: 0,
             is_official: false,
-            scanlation_group: Some(ScanlationGroup {
-                name: "Alpha".into(),
+            group: Some(ScanlationGroup {
+                name: Some("Alpha".into()),
             }),
         };
         let beta = ComixChapter {
-            chapter_id: 22,
-            scanlation_group_id: Some(12),
+            id: 22,
+            group_id: Some(12),
             number: 4.0,
             name: None,
             votes: 0,
             is_official: false,
-            scanlation_group: Some(ScanlationGroup {
-                name: "Beta".into(),
+            group: Some(ScanlationGroup {
+                name: Some("Beta".into()),
             }),
         };
 
@@ -457,26 +611,26 @@ mod tests {
     fn adjacent_float_numbers_keep_their_exact_values_and_chapter_ids() {
         let adjacent = f64::from_bits(4.0f64.to_bits() + 1);
         let first = ComixChapter {
-            chapter_id: 31,
-            scanlation_group_id: Some(11),
+            id: 31,
+            group_id: Some(11),
             number: 4.0,
             name: None,
             votes: 0,
             is_official: false,
-            scanlation_group: Some(ScanlationGroup {
-                name: "Alpha".into(),
+            group: Some(ScanlationGroup {
+                name: Some("Alpha".into()),
             }),
         }
         .into_chapter("title");
         let second = ComixChapter {
-            chapter_id: 32,
-            scanlation_group_id: Some(11),
+            id: 32,
+            group_id: Some(11),
             number: adjacent,
             name: None,
             votes: 0,
             is_official: false,
-            scanlation_group: Some(ScanlationGroup {
-                name: "Alpha".into(),
+            group: Some(ScanlationGroup {
+                name: Some("Alpha".into()),
             }),
         }
         .into_chapter("title");

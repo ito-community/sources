@@ -3,8 +3,11 @@ use std::collections::{HashMap, HashSet};
 
 use crate::models::ComixChapter;
 
+/// Site group id of the site's own uploads.
+const SITE_GROUP_ID: i32 = 10702;
+
 fn is_official_like(ch: &ComixChapter) -> bool {
-    ch.scanlation_group_id == Some(10702) || ch.is_official
+    ch.group_id == Some(SITE_GROUP_ID) || ch.is_official
 }
 
 /// Prefers official uploads, then the higher vote count. The site DTO has no numeric update
@@ -41,10 +44,6 @@ pub fn retain_first_keys(chapters: &mut Vec<Chapter>) {
     chapters.retain(|chapter| seen.insert(chapter.key.clone()));
 }
 
-pub fn urlencode(value: &str) -> String {
-    urlencoding::encode(value).into_owned()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -53,14 +52,14 @@ mod tests {
 
     fn chapter(votes: i32, is_official: bool, group: Option<i32>) -> ComixChapter {
         ComixChapter {
-            chapter_id: votes,
-            scanlation_group_id: group,
+            id: votes,
             number: 1.0,
             name: None,
             votes,
             is_official,
-            scanlation_group: Some(ScanlationGroup {
-                name: "group".into(),
+            group_id: group,
+            group: Some(ScanlationGroup {
+                name: Some("group".into()),
             }),
         }
     }
@@ -70,7 +69,15 @@ mod tests {
         let mut map = HashMap::new();
         dedup_insert(&mut map, chapter(50, false, Some(1)));
         dedup_insert(&mut map, chapter(0, true, Some(2)));
-        assert_eq!(map["1"].chapter_id, 0);
+        assert_eq!(map["1"].id, 0);
+    }
+
+    #[test]
+    fn site_group_upload_counts_as_official() {
+        let mut map = HashMap::new();
+        dedup_insert(&mut map, chapter(50, false, Some(1)));
+        dedup_insert(&mut map, chapter(0, false, Some(SITE_GROUP_ID)));
+        assert_eq!(map["1"].id, 0);
     }
 
     #[test]
@@ -79,7 +86,7 @@ mod tests {
         dedup_insert(&mut map, chapter(3, false, Some(1)));
         dedup_insert(&mut map, chapter(9, false, Some(2)));
         dedup_insert(&mut map, chapter(4, false, Some(3)));
-        assert_eq!(map["1"].chapter_id, 9);
+        assert_eq!(map["1"].id, 9);
     }
 
     #[test]
@@ -87,8 +94,8 @@ mod tests {
         let mut map = HashMap::new();
         dedup_insert(&mut map, chapter(5, false, Some(1)));
         dedup_insert(&mut map, chapter(5, false, Some(2)));
-        assert_eq!(map["1"].chapter_id, 5);
-        assert_eq!(map["1"].scanlation_group_id, Some(1));
+        assert_eq!(map["1"].id, 5);
+        assert_eq!(map["1"].group_id, Some(1));
     }
 
     fn titled(key: &str, title: &str) -> Chapter {
