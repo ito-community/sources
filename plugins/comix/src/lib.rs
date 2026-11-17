@@ -1,47 +1,97 @@
+use ito_rs::Error;
 use ito_rs::Result;
 use ito_rs::export_manga_plugin;
 use ito_rs::models::manga::{Chapter, Manga, PageResult as MangaPageResult};
 use ito_rs::models::{FilterItem, HomeComponent, HomeComponentValue, HomeLayout, Listing, Page};
 use ito_rs::provider::MangaProvider;
 use std::collections::HashMap;
+mod api;
+mod decode;
 mod helpers;
+mod key;
 mod models;
+mod query;
 mod settings;
-mod web;
+mod sign;
 
 use models::*;
-use web::{ComixWebView, Operation};
+use query::Query;
 
 pub const BASE_URL: &str = "https://comix.to";
 
+/// Genres excluded while NSFW content is hidden.
 const NSFW_GENRE_IDS: &[&str] = &["87264", "8", "87265", "13", "87266", "87268"];
+
+/// Chapters per page: the largest page the site accepts.
+const CHAPTER_PAGE_LIMIT: i32 = 100;
+const _: () = assert!(CHAPTER_PAGE_LIMIT <= 100);
 
 struct Comix;
 
-/// Query fragment that excludes NSFW genres while the setting is enabled.
-fn nsfw_query() -> String {
+/// Narrows a listing to the content the user has not hidden: safe and suggestive series without
+/// the NSFW genres. The site reads these as ordinary request parameters.
+fn with_content_filter(query: Query) -> Query {
     if settings::hide_nsfw() {
-        NSFW_GENRE_IDS
-            .iter()
-            .map(|id| format!("&genres[]=-{}", id))
-            .collect()
+        query
+            .list("content_rating", &["safe", "suggestive"])
+            .list("genres_ex", NSFW_GENRE_IDS)
     } else {
-        String::new()
+        query
     }
 }
 
-fn paged_result(query: &str, hidden_types: &[String]) -> Result<MangaPageResult> {
-    let page = ComixWebView::fetch::<Paged<ComixManga>>(Operation::List, None, query)?;
+fn paged_result(query: &Query, hidden_types: &[String]) -> Result<MangaPageResult> {
+    let page: Paged<Series> = api::get("/manga", query)?;
     Ok(page.into_page_result(hidden_types))
 }
 
-fn top_result(query: &str, hidden_types: &[String]) -> Result<MangaPageResult> {
-    let items = ComixWebView::fetch::<Vec<ComixManga>>(Operation::Top, None, query)?;
+fn top_result(query: &Query, hidden_types: &[String]) -> Result<MangaPageResult> {
+    let items: Vec<Series> = api::get("/manga/top", query)?;
     Ok(MangaPageResult {
         entries: visible(items, hidden_types),
         has_next_page: false,
     })
 }
+
+/// A top list of `kind` (`trending` or `follows`) over one day.
+fn top_query(kind: &'static str, limit: i32) -> Query {
+    with_content_filter(
+        Query::new()
+            .text("type", kind)
+            .int("days", 1)
+            .int("limit", limit),
+    )
+}
+
+/// The "hot" latest-updates scope, ordered by the newest chapter.
+fn hot_query(page: i32) -> Query {
+    with_content_filter(
+        Query::new()
+            .text("scope", "hot")
+            .int("limit", 30)
+            .order("chapter_updated_at", "desc")
+            .int("page", page),
+    )
+}
+
+/// The site path of a series. The key is the site's alphanumeric short id; anything else cannot
+/// name a series.
+fn series_path(hid: &str) -> Result<String> {
+    if hid.is_empty() || !hid.bytes().all(|byte| byte.is_ascii_alphanumeric()) {
+        return Err(Error::NotFound(UNKNOWN_KEY.into()));
+    }
+    Ok(format!("/manga/{hid}"))
+}
+
+/// The site path of a chapter's pages. Chapter keys are the site's numeric ids.
+fn chapter_path(id: &str) -> Result<String> {
+    if id.is_empty() || !id.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err(Error::NotFound(UNKNOWN_KEY.into()));
+    }
+    Ok(format!("/chapters/{id}"))
+}
+
+const UNKNOWN_KEY: &str = "Comix has no series or chapter with that id.";
 
 /// Decides the chapter loop's next step once `requested` has been answered: `Some(page)` fetches
 /// `page`, `None` stops. A response for another page is a host error, so the update fails whole.
@@ -60,26 +110,18 @@ fn next_chapter_page(requested: i32, meta: &PageMeta, item_count: usize) -> Resu
 
 impl MangaProvider for Comix {
     fn get_home() -> Result<HomeLayout> {
-        let extra_qs = nsfw_query();
         let hidden_types = settings::hidden_types();
 
-        let popular_mangas = top_result(
-            &format!("type=trending&days=1&limit=20{extra_qs}"),
-            &hidden_types,
-        )?
-        .entries;
-        let follows_mangas = top_result(
-            &format!("type=follows&days=1&limit=20{extra_qs}"),
-            &hidden_types,
-        )?
-        .entries;
-        let latest_mangas = paged_result(
-            &format!("scope=hot&limit=30&order[chapter_updated_at]=desc&page=1{extra_qs}"),
-            &hidden_types,
-        )?
-        .entries;
+        let popular_mangas = top_result(&top_query("trending", 20), &hidden_types)?.entries;
+        let follows_mangas = top_result(&top_query("follows", 20), &hidden_types)?.entries;
+        let latest_mangas = paged_result(&hot_query(1), &hidden_types)?.entries;
         let recent_mangas = paged_result(
-            &format!("order[created_at]=desc&limit=10&page=1{extra_qs}"),
+            &with_content_filter(
+                Query::new()
+                    .order("created_at", "desc")
+                    .int("limit", 10)
+                    .int("page", 1),
+            ),
             &hidden_types,
         )?
         .entries;
@@ -141,39 +183,40 @@ impl MangaProvider for Comix {
     }
 
     fn get_manga_list(listing: Listing, page: i32) -> Result<MangaPageResult> {
-        let extra_qs = nsfw_query();
         let hidden_types = settings::hidden_types();
 
         match listing.id.as_str() {
             "Trending Webtoon" => {
                 // comix.to's webtoon listing: manhua and manhwa types, ordered by 90-day views.
-                paged_result(
-                    &format!(
-                        "types[]=manhua&types[]=manhwa&order[views_90d]=desc&page={page}{extra_qs}"
-                    ),
-                    &hidden_types,
-                )
+                let query = with_content_filter(
+                    Query::new()
+                        .list("types", &["manhua", "manhwa"])
+                        .order("views_90d", "desc")
+                        .int("page", page),
+                );
+                paged_result(&query, &hidden_types)
             }
-            "Trending Manga" => paged_result(
-                &format!("types[]=manga&order[views_90d]=desc&page={page}{extra_qs}"),
-                &hidden_types,
-            ),
-            "Most Recent Popular" => top_result(
-                &format!("type=trending&days=1&limit=50{extra_qs}"),
-                &hidden_types,
-            ),
-            "Most Follows New Comics" => top_result(
-                &format!("type=follows&days=1&limit=50{extra_qs}"),
-                &hidden_types,
-            ),
-            "Latest Updates (Hot)" => paged_result(
-                &format!("scope=hot&limit=30&order[chapter_updated_at]=desc&page={page}{extra_qs}"),
-                &hidden_types,
-            ),
-            "Recently Added" => paged_result(
-                &format!("order[created_at]=desc&limit=30&page={page}{extra_qs}"),
-                &hidden_types,
-            ),
+            "Trending Manga" => {
+                let query = with_content_filter(
+                    Query::new()
+                        .list("types", &["manga"])
+                        .order("views_90d", "desc")
+                        .int("page", page),
+                );
+                paged_result(&query, &hidden_types)
+            }
+            "Most Recent Popular" => top_result(&top_query("trending", 50), &hidden_types),
+            "Most Follows New Comics" => top_result(&top_query("follows", 50), &hidden_types),
+            "Latest Updates (Hot)" => paged_result(&hot_query(page), &hidden_types),
+            "Recently Added" => {
+                let query = with_content_filter(
+                    Query::new()
+                        .order("created_at", "desc")
+                        .int("limit", 30)
+                        .int("page", page),
+                );
+                paged_result(&query, &hidden_types)
+            }
             _ => Err(ito_rs::Error::Unsupported),
         }
     }
@@ -183,14 +226,11 @@ impl MangaProvider for Comix {
         page: i32,
         _filters: Vec<FilterItem>,
     ) -> Result<MangaPageResult> {
-        let mut params = format!("page={page}");
+        let mut params = Query::new().int("page", page).order("relevance", "desc");
         if !query.is_empty() {
-            params.push_str(&format!("&keyword={}", helpers::urlencode(query)));
+            params = params.text("keyword", query);
         }
-        params.push_str("&order[relevance]=desc");
-        params.push_str(&nsfw_query());
-
-        paged_result(&params, &settings::hidden_types())
+        paged_result(&with_content_filter(params), &settings::hidden_types())
     }
 
     fn get_manga_update(
@@ -198,10 +238,11 @@ impl MangaProvider for Comix {
         needs_details: bool,
         needs_chapters: bool,
     ) -> Result<Manga> {
+        let series = series_path(&manga.key)?;
+
         if needs_details {
-            let updated: Manga =
-                ComixWebView::fetch::<ComixManga>(Operation::Detail, Some(manga.key.as_str()), "")?
-                    .into();
+            let detail: Series = api::get(&series, &Query::new())?;
+            let updated: Manga = detail.into();
             manga.title = updated.title;
             manga.cover = updated.cover;
             manga.authors = updated.authors;
@@ -215,19 +256,20 @@ impl MangaProvider for Comix {
         }
 
         if needs_chapters {
-            let limit = 100;
-            let mut page = 1;
+            let chapters_path = format!("{series}/chapters");
             let deduplicate = settings::dedupchapter();
+            let mut page = 1;
             let mut chapter_map: HashMap<String, ComixChapter> = HashMap::new();
             let mut chapter_list: Vec<ComixChapter> = Vec::new();
+            // Pages are requested one after another and never past the last page. The SDK offers
+            // no delay between requests, so the loop cannot space them further.
             loop {
-                let query = format!("limit={limit}&page={page}&order[number]=desc");
+                let query = Query::new()
+                    .int("limit", CHAPTER_PAGE_LIMIT)
+                    .order("number", "desc")
+                    .int("page", page);
                 // Any failed page fails the whole update: a partial chapter list is never returned.
-                let json = ComixWebView::fetch::<Paged<ComixChapter>>(
-                    Operation::Chapters,
-                    Some(manga.key.as_str()),
-                    &query,
-                )?;
+                let json: Paged<ComixChapter> = api::get(&chapters_path, &query)?;
                 let next = next_chapter_page(page, &json.meta, json.items.len())?;
                 if deduplicate {
                     for item in json.items {
@@ -271,8 +313,9 @@ impl MangaProvider for Comix {
     }
 
     fn get_page_list(_manga: Manga, chapter: Chapter) -> Result<Vec<Page>> {
-        ComixWebView::fetch::<ChapterPages>(Operation::Pages, Some(chapter.key.as_str()), "")?
-            .into_pages()
+        let path = chapter_path(chapter.key.as_str())?;
+        let pages: ChapterPages = api::get(&path, &Query::new())?;
+        pages.into_pages()
     }
 
     fn handle_url(_url: &str) -> Result<ito_rs::models::LinkValue> {
@@ -311,5 +354,31 @@ mod tests {
             next_chapter_page(2, &meta(1, 3), 100),
             Err(ito_rs::Error::Host(_))
         ));
+    }
+
+    #[test]
+    fn hidden_content_is_excluded_by_rating_and_genre_parameters() {
+        assert_eq!(
+            with_content_filter(Query::new()).message("/manga"),
+            "/manga?content_rating[0]=safe&content_rating[1]=suggestive&genres_ex[0]=87264&genres_ex[1]=8&genres_ex[2]=87265&genres_ex[3]=13&genres_ex[4]=87266&genres_ex[5]=87268"
+        );
+    }
+
+    #[test]
+    fn series_keys_must_be_site_short_ids() {
+        assert_eq!(series_path("8v88").ok().as_deref(), Some("/manga/8v88"));
+        assert!(series_path("").is_err());
+        assert!(series_path("8v88/../x").is_err());
+        assert!(series_path("3756?x=1").is_err());
+    }
+
+    #[test]
+    fn chapter_keys_must_be_numeric_ids() {
+        assert_eq!(
+            chapter_path("11734794").ok().as_deref(),
+            Some("/chapters/11734794")
+        );
+        assert!(chapter_path("").is_err());
+        assert!(chapter_path("12a").is_err());
     }
 }
