@@ -11,7 +11,7 @@ use ito_rs::models::{
     Listing, MediaEntry, MediaKind, MediaPageResult, Page, PageContent, SettingIssue,
     SettingsAction, SettingsSchema,
 };
-use ito_rs::net::Request;
+use ito_rs::net::{NetResponse, Request};
 use ito_rs::provider::SourceProvider;
 use ito_rs::{Error, Result};
 use serde::de::DeserializeOwned;
@@ -32,10 +32,15 @@ const CHECK_FILTERS: &str = "check_filter_names";
 
 pub struct Atsumaru;
 
+/// A GET request for an Atsumaru endpoint.
+fn get_request(url: &str) -> Request {
+    let mut request = Request::get(url);
+    request.header("Referer", "https://atsu.moe/");
+    request
+}
+
 fn get_json<T: DeserializeOwned>(url: &str) -> Result<T> {
-    let response = Request::get(url)
-        .header("Referer", "https://atsu.moe/")
-        .send()?;
+    let response = get_request(url).send()?;
     decode(response.status, &response.body)
 }
 
@@ -241,7 +246,12 @@ fn display_title(title: String, english: Option<String>, id: &str) -> String {
 }
 
 fn search_page(url: &str, page: i32, ceiling: Rating) -> Result<MediaPageResult> {
-    let response: SearchResponse = get_json(url)?;
+    search_result(get_request(url).send()?, page, ceiling)
+}
+
+/// Reads a search response into one page of entries.
+fn search_result(response: NetResponse, page: i32, ceiling: Rating) -> Result<MediaPageResult> {
+    let response: SearchResponse = decode(response.status, &response.body)?;
     let shown = usize::try_from(page.max(1))
         .unwrap_or(1)
         .saturating_mul(PAGE_SIZE);
@@ -260,7 +270,12 @@ fn lookup(ids: &[&str]) -> Result<Vec<SearchDocument>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    let response: SearchResponse = get_json(&query::lookup_url(ids))?;
+    lookup_documents(get_request(&query::lookup_url(ids)).send()?)
+}
+
+/// Reads a catalog lookup response into its documents.
+fn lookup_documents(response: NetResponse) -> Result<Vec<SearchDocument>> {
+    let response: SearchResponse = decode(response.status, &response.body)?;
     Ok(response.hits.into_iter().map(|hit| hit.document).collect())
 }
 
@@ -365,41 +380,40 @@ fn spotlight(preferences: &Preferences) -> Result<Option<Term>> {
         .ok_or_else(unknown_filter_name)
 }
 
-fn section_page(
-    section: &Section,
+/// One section page's first request, built before anything is sent.
+struct PagePlan {
+    section: &'static Section,
+    page: i32,
+    request: Request,
+}
+
+/// Plans a section's page. Returns `None` when the settings leave the section no media to show.
+fn page_plan(
+    section: &'static Section,
     preferences: &Preferences,
     page: i32,
-) -> Result<MediaPageResult> {
+) -> Result<Option<PagePlan>> {
     let mediums = section_mediums(section, preferences);
     if mediums.is_empty() {
-        return Ok(empty_page());
+        return Ok(None);
     }
     let content = &preferences.content;
     let blocked = blocked_tag_ids(preferences)?;
-    match section.source {
+    let url = match section.source {
         SectionSource::Feed { endpoint, .. } => {
             let offset = usize::try_from(page.max(1) - 1).unwrap_or(0) * PAGE_SIZE;
-            let url = query::feed_url(
+            query::feed_url(
                 endpoint,
                 offset,
                 &mediums,
                 content,
                 &blocked,
                 preferences.period(section),
-            );
-            let feed: FeedResponse = get_json(&url)?;
-            Ok(MediaPageResult {
-                has_next_page: feed.items.len() == PAGE_SIZE,
-                entries: rate_feed(feed.items, content)?,
-            })
+            )
         }
         SectionSource::Trending => {
             let filters = query::catalog_filters(content, &mediums, &blocked);
-            search_page(
-                &query::search_url("", page, filters, Sort::Trending),
-                page,
-                content.max_rating,
-            )
+            query::search_url("", page, filters, Sort::Trending)
         }
         SectionSource::GenreSpotlight => {
             let genre = spotlight(preferences)?.ok_or_else(|| {
@@ -407,21 +421,112 @@ fn section_page(
             })?;
             let mut filters = query::catalog_filters(content, &mediums, &blocked);
             filters.push(query::genre_filter(&genre.id));
-            search_page(
-                &query::search_url("", page, filters, Sort::Popularity),
-                page,
-                content.max_rating,
-            )
+            query::search_url("", page, filters, Sort::Popularity)
+        }
+    };
+    Ok(Some(PagePlan {
+        section,
+        page,
+        request: get_request(&url),
+    }))
+}
+
+/// A section page's first response: its entries, or a feed whose entries wait on a catalog lookup.
+enum FirstPage {
+    Ready(MediaPageResult),
+    Feed {
+        has_next_page: bool,
+        items: Vec<FeedItem>,
+    },
+}
+
+fn first_page(
+    section: &Section,
+    page: i32,
+    ceiling: Rating,
+    response: Result<NetResponse>,
+) -> Result<FirstPage> {
+    let response = response?;
+    match section.source {
+        SectionSource::Feed { .. } => {
+            let feed: FeedResponse = decode(response.status, &response.body)?;
+            Ok(FirstPage::Feed {
+                has_next_page: feed.items.len() == PAGE_SIZE,
+                items: feed.items,
+            })
+        }
+        SectionSource::Trending | SectionSource::GenreSpotlight => {
+            Ok(FirstPage::Ready(search_result(response, page, ceiling)?))
         }
     }
 }
 
-/// Feeds carry no content rating, so it comes from the catalog in one lookup per page. The
-/// site already filters feeds by rating; entries outside the settings are dropped regardless.
-fn rate_feed(items: Vec<FeedItem>, content: &ContentPreferences) -> Result<Vec<MediaEntry>> {
+/// The catalog lookup that rates a feed's items, or `None` when the feed has none.
+fn feed_lookup(items: &[FeedItem]) -> Option<Request> {
+    if items.is_empty() {
+        return None;
+    }
     let ids: Vec<&str> = items.iter().map(|item| item.id.as_str()).collect();
-    let documents = lookup(&ids)?;
-    Ok(items
+    Some(get_request(&query::lookup_url(&ids)))
+}
+
+/// Loads the first page of each plan. The first requests go out together, then the feeds' catalog
+/// lookups go out together, so each section doesn't add a round trip of its own. Results keep the
+/// plans' order.
+fn load_pages(preferences: &Preferences, plans: Vec<PagePlan>) -> Vec<Result<MediaPageResult>> {
+    let ceiling = preferences.content.max_rating;
+    let (pages, requests): (Vec<(&'static Section, i32)>, Vec<Request>) = plans
+        .into_iter()
+        .map(|plan| ((plan.section, plan.page), plan.request))
+        .unzip();
+    let firsts: Vec<Result<FirstPage>> = pages
+        .iter()
+        .zip(Request::send_all(&requests))
+        .map(|(&(section, page), response)| first_page(section, page, ceiling, response))
+        .collect();
+    let lookups: Vec<Request> = firsts
+        .iter()
+        .filter_map(|first| match first {
+            Ok(FirstPage::Feed { items, .. }) => feed_lookup(items),
+            _ => None,
+        })
+        .collect();
+    let mut lookup_responses = Request::send_all(&lookups).into_iter();
+    firsts
+        .into_iter()
+        .map(|first| -> Result<MediaPageResult> {
+            match first? {
+                FirstPage::Ready(page) => Ok(page),
+                FirstPage::Feed {
+                    has_next_page,
+                    items,
+                } => {
+                    let documents = if items.is_empty() {
+                        Vec::new()
+                    } else {
+                        let response = lookup_responses
+                            .next()
+                            .expect("send_all returns one result per lookup");
+                        lookup_documents(response?)?
+                    };
+                    Ok(MediaPageResult {
+                        has_next_page,
+                        entries: rate_feed(items, &documents, &preferences.content),
+                    })
+                }
+            }
+        })
+        .collect()
+}
+
+/// Feeds carry no content rating, so it comes from the catalog documents looked up for their ids.
+/// The site already filters feeds by rating; entries outside the settings are dropped regardless.
+fn rate_feed(
+    items: Vec<FeedItem>,
+    documents: &[SearchDocument],
+    content: &ContentPreferences,
+) -> Vec<MediaEntry> {
+    items
         .into_iter()
         .filter_map(|item| {
             let rated = documents.iter().find(|document| document.id == item.id);
@@ -446,7 +551,7 @@ fn rate_feed(items: Vec<FeedItem>, content: &ContentPreferences) -> Result<Vec<M
             };
             Some(listed.into_entry())
         })
-        .collect())
+        .collect()
 }
 
 /// Whether a feed entry fits the content settings, as the search filters require.
@@ -460,9 +565,15 @@ fn feed_allows(rating: Option<Rating>, adult: bool, content: &ContentPreferences
     rating.is_none_or(|rating| rating <= content.max_rating)
 }
 
+/// The home page's sections. Their first pages load together, so the page takes a fixed number of
+/// round trips however many sections are enabled.
 fn home() -> Result<HomeLayout> {
     let preferences = preferences()?;
-    let mut components = Vec::new();
+    let mut shown = Vec::new();
+    let mut plans = Vec::new();
+    // Planning stops at the first failure. That error is reported after the sections planned before
+    // it, where a section-by-section walk would have stopped.
+    let mut planning_error = None;
     for section in settings::SECTIONS {
         if !preferences.section_enabled(section) {
             continue;
@@ -472,15 +583,33 @@ fn home() -> Result<HomeLayout> {
             continue;
         }
         let title = match section.source {
-            SectionSource::GenreSpotlight => match spotlight(&preferences)? {
-                Some(genre) => format!("Spotlight: {}", genre.name),
-                None => continue,
+            SectionSource::GenreSpotlight => match spotlight(&preferences) {
+                Ok(Some(genre)) => format!("Spotlight: {}", genre.name),
+                Ok(None) => continue,
+                Err(error) => {
+                    planning_error = Some(error);
+                    break;
+                }
             },
             _ => section.title.to_owned(),
         };
-        let entries = section_page(section, &preferences, 1)
-            .map_err(|error| in_section(error, &title))?
-            .entries;
+        match page_plan(section, &preferences, 1) {
+            Ok(Some(plan)) => {
+                shown.push((section, title, mediums));
+                plans.push(plan);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                planning_error = Some(in_section(error, &title));
+                break;
+            }
+        }
+    }
+
+    let pages = load_pages(&preferences, plans);
+    let mut components = Vec::new();
+    for ((section, title, mediums), page) in shown.into_iter().zip(pages) {
+        let entries = page.map_err(|error| in_section(error, &title))?.entries;
         let listing = Some(Listing {
             id: section.id.into(),
             name: title.clone(),
@@ -515,13 +644,22 @@ fn home() -> Result<HomeLayout> {
             value,
         });
     }
-    Ok(HomeLayout { components })
+    match planning_error {
+        Some(error) => Err(error),
+        None => Ok(HomeLayout { components }),
+    }
 }
 
 fn listing(listing: &Listing, page: i32) -> Result<MediaPageResult> {
     let section = settings::section(&listing.id)
         .ok_or_else(|| Error::NotFound("Atsumaru has no such list".into()))?;
-    section_page(section, &preferences()?, page)
+    let preferences = preferences()?;
+    match page_plan(section, &preferences, page)? {
+        Some(plan) => load_pages(&preferences, vec![plan])
+            .pop()
+            .expect("load_pages returns one page per plan"),
+        None => Ok(empty_page()),
+    }
 }
 
 /// Refreshes an entry, keeping its kind: entries saved before novels were supported stay
