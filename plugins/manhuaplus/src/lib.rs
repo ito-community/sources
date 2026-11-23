@@ -376,11 +376,46 @@ fn update(entry: MediaEntry, details: bool, units: bool) -> Result<MediaEntry> {
         .ok_or(Error::Unsupported)?;
     parse_update(m, &request(&path)?, details, units).map(MediaEntry::Manga)
 }
+/// The reader's part of a chapter page: from its `reading-content` element to the next chapter picker, or to the
+/// end. The rest of the page carries pickers listing every chapter of the series, megabytes for a long one, and
+/// parsing them all is most of a chapter's load time.
+fn reader_section(html: &str) -> Option<&str> {
+    let mut from = 0;
+    while let Some(offset) = html[from..].find("<div") {
+        let start = from + offset;
+        let tag_end = start + html[start..].find('>')?;
+        if has_class(&html[start..tag_end], "reading-content") {
+            let end = html[tag_end..].find("<select").map_or(html.len(), |i| tag_end + i);
+            return Some(&html[start..end]);
+        }
+        from = tag_end;
+    }
+    None
+}
+/// Whether the opening tag `tag` has `class` among its class names.
+fn has_class(tag: &str, class: &str) -> bool {
+    let Some(index) = tag.find("class=") else {
+        return false;
+    };
+    let rest = &tag[index + "class=".len()..];
+    let Some(quote) = rest.chars().next().filter(|c| *c == '"' || *c == '\'') else {
+        return false;
+    };
+    rest[1..]
+        .split(quote)
+        .next()
+        .is_some_and(|names| names.split_ascii_whitespace().any(|name| name == class))
+}
 fn reader_pages(html: &str, path: &str) -> Result<Vec<Page>> {
     check_response(200, html)?;
-    let root = Html::parse_document(html);
+    let reader = selector(".reading-content")?;
+    // The whole page is only parsed when the reader section can't be found on its own.
+    let root = reader_section(html)
+        .map(Html::parse_fragment)
+        .filter(|section| section.select(&reader).next().is_some())
+        .unwrap_or_else(|| Html::parse_document(html));
     let content = root
-        .select(&selector(".reading-content")?)
+        .select(&reader)
         .next()
         .ok_or_else(|| Error::Html("ManhuaPlus reader content was not found".into()))?;
     // Lock markers only count inside the reader; page chrome can carry unrelated widgets.
@@ -650,6 +685,23 @@ mod tests {
         assert!(
             reader_pages("<div class='chapter-locked'></div><div class='reading-content'><img src='https://cdn.manhuaplus.com/2026/01/a.jpg'></div>", "/manga/example/chapter-1/").is_ok()
         );
+    }
+    #[test]
+    fn reader_section_skips_the_chapter_pickers_and_finds_the_exact_reader() {
+        let picker = format!(
+            "<select class='single-chapter-select'>{}</select>",
+            "<option data-redirect='/manga/example/chapter-9/'>Chapter 9</option>".repeat(500)
+        );
+        let html = format!(
+            "<style>.reading-content{{color:red}}</style><div class=\"c-page reading-content-wrap\">{picker}\
+             <div class=\"reading-content\"><img src=\"https://cdn.manhuaplus.com/2026/01/a.jpg\"></div>{picker}</div>"
+        );
+        let section = reader_section(&html).unwrap();
+        assert!(section.starts_with("<div class=\"reading-content\">"));
+        assert!(!section.contains("<option"));
+        let pages = reader_pages(&html, "/manga/example/chapter-1/").unwrap();
+        assert_eq!(pages.len(), 1);
+        assert!(reader_section("<div class='reading-content-wrap'><p>x</p></div>").is_none());
     }
     #[test]
     fn search_empty_and_catalog_next_link() {
