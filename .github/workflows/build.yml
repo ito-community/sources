@@ -20,7 +20,7 @@ concurrency:
 env:
   # The ito-pkg revision that packs the plugins, verifies the packages and builds the repository
   # index: the strict-packaging release.
-  ITO_PKG_REV: 1be6c19e2e96199b09db5bff7b541774693185a5
+  ITO_PKG_REV: e7a607a3f994fb9fa4007ece62a9606ac830fc99
   # `ito-pkg pack` (through this variable) and `ito-pkg verify` (through `--expect-abi`) fail for any
   # plugin built for another ABI. Every plugin targets ABI 3, which Ito 1.5.0 and later run.
   ITO_EXPECTED_ABI: "3"
