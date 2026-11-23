@@ -17,6 +17,13 @@ pub struct AnikotoProvider;
 
 const BASE_URL: &str = "https://anikototv.to";
 
+/// A server listed on an episode page: its quality label and the id its ajax request names.
+struct Server {
+    /// The audio type and server name, shown after the resolution in the quality name.
+    label: String,
+    link_id: String,
+}
+
 fn episode_from_row(
     data_num: String,
     data_slug: impl FnOnce() -> String,
@@ -340,8 +347,6 @@ impl AnimeProvider for AnikotoProvider {
     }
 
     fn get_video_list(_anime: Anime, episode: Episode) -> Result<Vec<Video>> {
-        let mut videos = Vec::new();
-        
         let data_ids = episode.key;
         if data_ids.is_empty() {
             ito_rs::host::print("Video list: Episode key (data-ids) is empty");
@@ -350,21 +355,22 @@ impl AnimeProvider for AnikotoProvider {
 
         let list_url = format!("{}/ajax/server/list?servers={}", BASE_URL, data_ids);
         ito_rs::host::print(&format!("Video list: Fetching server list: {}", list_url));
-        
+
         let list_res = Request::get(&list_url)
             .header("X-Requested-With", "XMLHttpRequest")
             .send()?;
-            
+
         if list_res.status != 200 {
             ito_rs::host::print(&format!("Video list: Server list returned status {}", list_res.status));
             return Err(Error::Unsupported);
         }
-        
+
         let list_json: serde_json::Value = serde_json::from_slice(&list_res.body).map_err(|_| Error::Unsupported)?;
         let html_str = list_json.get("result").and_then(|r| r.as_str()).unwrap_or_default();
-        
+
         let document = Node::new(html_str.as_bytes());
-        
+
+        let mut servers = Vec::new();
         if let Ok(type_nodes) = document.select(".servers .type") {
             for type_node in type_nodes {
                 let data_type = type_node.attr("data-type").unwrap_or_default().unwrap_or_default();
@@ -374,7 +380,7 @@ impl AnimeProvider for AnikotoProvider {
                     "dub" => "DUB",
                     _ => &data_type,
                 };
-                
+
                 if let Ok(server_nodes) = type_node.select("li[data-link-id]") {
                     for node in server_nodes {
                         let link_id = node.attr("data-link-id").unwrap_or_default().unwrap_or_default();
@@ -383,26 +389,10 @@ impl AnimeProvider for AnikotoProvider {
                         }
 
                         let server_name = node.text().unwrap_or_default().trim().to_string();
-                        
-                        let ajax_url = format!("{}/ajax/server?get={}", BASE_URL, link_id);
-                        if let Ok(ajax_res) = Request::get(&ajax_url)
-                            .header("X-Requested-With", "XMLHttpRequest")
-                            .send() 
-                        {
-                            if ajax_res.status == 200 {
-                                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ajax_res.body) {
-                                    if let Some(embed_url) = json.get("result").and_then(|r| r.get("url")).and_then(|u| u.as_str()) {
-                                        ito_rs::host::print(&format!("Video list: Found embed_url: {}", embed_url));
-                                        if let Some(mut extracted_videos) = megaplay::extract(embed_url, BASE_URL) {
-                                            for v in &mut extracted_videos {
-                                                v.quality = format!("{} {} {}", v.quality, type_label, server_name);
-                                            }
-                                            videos.extend(extracted_videos);
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        servers.push(Server {
+                            label: format!("{type_label} {server_name}"),
+                            link_id,
+                        });
                     }
                 }
             }
@@ -410,6 +400,66 @@ impl AnimeProvider for AnikotoProvider {
             ito_rs::host::print("Video list: Failed to find .servers .type");
         }
 
+        // The servers move through the chain together: each stage sends one request per server that
+        // reached it, and a server that fails a stage is skipped, as it was before.
+        let ajax_requests: Vec<Request> = servers
+            .iter()
+            .map(|server| {
+                let mut request = Request::get(format!("{}/ajax/server?get={}", BASE_URL, server.link_id));
+                request.header("X-Requested-With", "XMLHttpRequest");
+                request
+            })
+            .collect();
+        let mut embeds = Vec::new();
+        for (server, result) in servers.into_iter().zip(Request::send_all(&ajax_requests)) {
+            if let Ok(ajax_res) = result
+                && ajax_res.status == 200
+                && let Ok(json) = serde_json::from_slice::<serde_json::Value>(&ajax_res.body)
+                && let Some(embed_url) = json.get("result").and_then(|r| r.get("url")).and_then(|u| u.as_str())
+            {
+                ito_rs::host::print(&format!("Video list: Found embed_url: {}", embed_url));
+                embeds.push((server.label, embed_url.to_string()));
+            }
+        }
+
+        let embed_requests: Vec<Request> = embeds
+            .iter()
+            .map(|(_, embed_url)| megaplay::embed_request(embed_url, BASE_URL))
+            .collect();
+        let mut sources = Vec::new();
+        for ((label, embed_url), result) in embeds.into_iter().zip(Request::send_all(&embed_requests)) {
+            if let Ok(embed) = result
+                && let Some(api_url) = megaplay::sources_url(&embed_url, &embed)
+            {
+                sources.push((label, embed_url, api_url));
+            }
+        }
+
+        let sources_requests: Vec<Request> = sources
+            .iter()
+            .map(|(_, embed_url, api_url)| megaplay::sources_request(api_url, embed_url))
+            .collect();
+        let mut streams = Vec::new();
+        for ((label, embed_url, _), result) in sources.into_iter().zip(Request::send_all(&sources_requests)) {
+            if let Ok(response) = result
+                && let Some(stream) = megaplay::stream(&embed_url, &response)
+            {
+                streams.push((label, stream));
+            }
+        }
+
+        // Every caption track of every stream goes out together, in stream order.
+        let caption_requests: Vec<Request> = streams
+            .iter()
+            .flat_map(|(_, stream)| stream.caption_requests())
+            .collect();
+        let mut captions = Request::send_all(&caption_requests).into_iter();
+        let mut videos = Vec::new();
+        for (label, stream) in streams {
+            let mut video = stream.into_video(&mut captions);
+            video.quality = format!("{} {}", video.quality, label);
+            videos.push(video);
+        }
         Ok(videos)
     }
 
