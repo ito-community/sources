@@ -5,6 +5,7 @@ use ito_rs::models::novel::{Novel, Chapter, PageResult, Status as NovelStatus, C
 use ito_rs::net::Request;
 use ito_rs::html::Node;
 use ito_rs::{Error, Result};
+use serde::Deserialize;
 
 const BASE_URL: &str = "https://novelfire.net";
 
@@ -35,6 +36,143 @@ fn chapter_from_row(href: Option<String>, title: &str, chapter_no: Option<&str>)
         url: href,
         ..Chapter::new(key, ContentKind::Text)
     }
+}
+
+/// The site's numeric id for a series, from its page: chapter lists are fetched by it.
+fn series_id(book: &Node) -> Result<Option<String>> {
+    let Some(report) = book.select("#novel-report")?.into_iter().next() else {
+        return Ok(None);
+    };
+    Ok(report
+        .attr("report-post_id")?
+        .filter(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit())))
+}
+
+/// Every chapter of the series, in one request, or `None` when the list can't be read as expected.
+fn full_chapter_list(novel_key: &str, series_id: &str) -> Option<Vec<Chapter>> {
+    let url = format!(
+        "{BASE_URL}/ajax/listChapterDataAjax?draw=1\
+         &columns%5B0%5D%5Bdata%5D=n_sort&columns%5B0%5D%5Bname%5D=cmm_posts_detail.n_sort\
+         &columns%5B0%5D%5Bsearchable%5D=true&columns%5B0%5D%5Borderable%5D=true\
+         &columns%5B0%5D%5Bsearch%5D%5Bvalue%5D=&columns%5B0%5D%5Bsearch%5D%5Bregex%5D=false\
+         &order%5B0%5D%5Bcolumn%5D=0&order%5B0%5D%5Bdir%5D=asc&start=0&length=-1\
+         &search%5Bvalue%5D=&search%5Bregex%5D=false&post_id={series_id}&only_bookmark=false"
+    );
+    let mut request = Request::get(&url);
+    request.header("Accept", "application/json");
+    request.header("X-Requested-With", "XMLHttpRequest");
+    request.header("Referer", &format!("{BASE_URL}/book/{novel_key}"));
+    let res = request.send().ok()?;
+    if !(200..=299).contains(&res.status) {
+        return None;
+    }
+    chapters_from_list(novel_key, &res.body)
+}
+
+#[derive(Deserialize)]
+struct ChapterList {
+    #[serde(rename = "recordsTotal")]
+    records_total: usize,
+    data: Vec<ChapterListRow>,
+}
+
+#[derive(Deserialize)]
+struct ChapterListRow {
+    n_sort: serde_json::Number,
+    title: String,
+}
+
+/// The chapters in a chapter-list answer, built as the paged list builds its rows. `None` when the answer is not
+/// the whole list (fewer rows than it counts, none at all) or a chapter has no whole number to address it by.
+fn chapters_from_list(novel_key: &str, body: &[u8]) -> Option<Vec<Chapter>> {
+    let list: ChapterList = serde_json::from_slice(body).ok()?;
+    if list.data.is_empty() || list.data.len() != list.records_total {
+        return None;
+    }
+    list.data
+        .into_iter()
+        .map(|row| {
+            let number = row.n_sort.as_u64()?.to_string();
+            let href = format!("/book/{novel_key}/chapter-{number}");
+            Some(chapter_from_row(Some(href), &decode_entities(&row.title), Some(&number)))
+        })
+        .collect()
+}
+
+/// `text` with the HTML character references the chapter list escapes titles with decoded.
+fn decode_entities(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find('&') {
+        out.push_str(&rest[..start]);
+        rest = &rest[start..];
+        let decoded = rest.find(';').filter(|end| *end <= 10).and_then(|end| {
+            let name = &rest[1..end];
+            let ch = match name {
+                "amp" => Some('&'),
+                "lt" => Some('<'),
+                "gt" => Some('>'),
+                "quot" => Some('"'),
+                "apos" => Some('\''),
+                _ => name
+                    .strip_prefix("#x")
+                    .or_else(|| name.strip_prefix("#X"))
+                    .map(|hex| u32::from_str_radix(hex, 16))
+                    .or_else(|| name.strip_prefix('#').map(str::parse::<u32>))
+                    .and_then(|n| n.ok())
+                    .and_then(char::from_u32),
+            }?;
+            Some((ch, end))
+        });
+        match decoded {
+            Some((ch, end)) => {
+                out.push(ch);
+                rest = &rest[end + 1..];
+            }
+            None => {
+                out.push('&');
+                rest = &rest[1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The chapters from the site's paged HTML list, 100 a page.
+fn paged_chapter_list(novel_key: &str) -> Result<Vec<Chapter>> {
+    let mut page = 1;
+    let mut all_chapters = Vec::new();
+    loop {
+        let url = format!("{}/book/{}/chapters?page={}", BASE_URL, novel_key, page);
+        let html = fetch_page(&url)?;
+        let chapter_nodes = html.select(".chapter-list > li")?;
+        if chapter_nodes.is_empty() {
+            break;
+        }
+        for node in chapter_nodes {
+            let a_node = node.select("a")?.into_iter().next();
+            if let Some(a) = a_node {
+                let title = a.attr("title")?.unwrap_or_default();
+                let chap_no_node = node.select(".chapter-no")?.into_iter().next();
+                let chapter_no = match chap_no_node {
+                    Some(n) => Some(n.text()?),
+                    None => None,
+                };
+                all_chapters.push(chapter_from_row(a.attr("href")?, &title, chapter_no.as_deref()));
+            }
+        }
+        let has_next_page = html.select(".pagination li.page-item:last-child")?
+            .into_iter()
+            .next()
+            .map(|node| node.attr("class").map(|c| !c.unwrap_or_default().contains("disabled")).unwrap_or(false))
+            .unwrap_or(false);
+        if !has_next_page {
+            break;
+        }
+        page += 1;
+    }
+    Ok(all_chapters)
 }
 
 impl NovelProvider for NovelFire {
@@ -221,6 +359,7 @@ impl NovelProvider for NovelFire {
     fn get_novel_update(novel: Novel, needs_details: bool, needs_chapters: bool) -> Result<Novel> {
         let mut updated_novel = novel.clone();
 
+        let mut book = None;
         if needs_details {
             let url = format!("{}/book/{}", BASE_URL, novel.key);
             let html = fetch_page(&url)?;
@@ -263,49 +402,23 @@ impl NovelProvider for NovelFire {
             updated_novel.status = NovelStatus::Ongoing;
             updated_novel.content_rating = ContentRating::Safe;
             updated_novel.url = Some(url);
+            book = Some(html);
         }
 
         if needs_chapters {
-            let mut page = 1;
-            let mut all_chapters = Vec::new();
-
-            loop {
-                let url = format!("{}/book/{}/chapters?page={}", BASE_URL, novel.key, page);
-                let html = fetch_page(&url)?;
-                let chapter_nodes = html.select(".chapter-list > li")?;
-
-                if chapter_nodes.is_empty() {
-                    break;
+            // The site's chapter list answers with every chapter at once; its paged HTML list is only the fallback
+            // when that list can't be read. A long novel then takes two requests instead of one per 100 chapters.
+            let listed = match book.as_ref() {
+                Some(html) => series_id(html)?.and_then(|id| full_chapter_list(&novel.key, &id)),
+                None => {
+                    let html = fetch_page(&format!("{}/book/{}", BASE_URL, novel.key))?;
+                    series_id(&html)?.and_then(|id| full_chapter_list(&novel.key, &id))
                 }
-
-                for node in chapter_nodes {
-                    let a_node = node.select("a")?.into_iter().next();
-                    if let Some(a) = a_node {
-                        let title = a.attr("title")?.unwrap_or_default();
-                        let chap_no_node = node.select(".chapter-no")?.into_iter().next();
-                        let chapter_no = match chap_no_node {
-                            Some(n) => Some(n.text()?),
-                            None => None,
-                        };
-
-                        all_chapters.push(chapter_from_row(a.attr("href")?, &title, chapter_no.as_deref()));
-                    }
-                }
-
-                let has_next_page = html.select(".pagination li.page-item:last-child")?
-                    .into_iter()
-                    .next()
-                    .map(|node| node.attr("class").map(|c| !c.unwrap_or_default().contains("disabled")).unwrap_or(false))
-                    .unwrap_or(false);
-
-                if !has_next_page {
-                    break;
-                }
-                
-                page += 1;
-            }
-
-            updated_novel.chapters = Some(all_chapters);
+            };
+            updated_novel.chapters = Some(match listed {
+                Some(chapters) => chapters,
+                None => paged_chapter_list(&novel.key)?,
+            });
         }
 
         Ok(updated_novel)
@@ -378,7 +491,7 @@ export_novel_plugin!(NovelFire);
 
 #[cfg(test)]
 mod tests {
-    use super::chapter_from_row;
+    use super::{chapter_from_row, chapters_from_list, decode_entities};
 
     /// Chapter-list rows of a saved page, as (anchor href, anchor title, chapter number text).
     const CHAPTER_ROWS: &[(&str, &str, &str)] = &[
@@ -425,5 +538,47 @@ mod tests {
                 "chapter-100"
             ]
         );
+    }
+
+    /// The one-request list gives the same chapters as the paged list's rows, titles unescaped.
+    #[test]
+    fn the_full_list_builds_the_same_chapters_as_the_paged_rows() {
+        let body = br#"{"draw":1,"recordsTotal":3,"recordsFiltered":3,"data":[
+            {"n_sort":1,"slug":"chapter-1-1-nightmare-begins","title":"Chapter 1 - 1: Nightmare Begins"},
+            {"n_sort":2,"slug":"chapter-2","title":"Chapter 2 - 2: Let&#039;s see &amp; explain"},
+            {"n_sort":50,"slug":"chapter-50","title":"Chapter 50 - 50: Death Trap"}]}"#;
+        let listed = chapters_from_list("shadow-slave", body).unwrap();
+        let paged = [
+            ("/book/shadow-slave/chapter-1", "Chapter 1 - 1: Nightmare Begins", "1"),
+            ("/book/shadow-slave/chapter-2", "Chapter 2 - 2: Let's see & explain", "2"),
+            ("/book/shadow-slave/chapter-50", "Chapter 50 - 50: Death Trap", "50"),
+        ]
+        .map(|(href, title, number)| chapter_from_row(Some(href.to_string()), title, Some(number)));
+        assert_eq!(listed.len(), paged.len());
+        for (a, b) in listed.iter().zip(paged.iter()) {
+            assert_eq!(a.key, b.key);
+            assert_eq!(a.title, b.title);
+            assert_eq!(a.chapter, b.chapter);
+            assert_eq!(a.url, b.url);
+        }
+        assert_eq!(listed[1].title.as_deref(), Some("Let's see & explain"));
+    }
+
+    /// Anything but the whole list sends the plugin back to the paged list.
+    #[test]
+    fn a_partial_or_unexpected_list_is_not_used() {
+        let short = br#"{"recordsTotal":2334,"data":[{"n_sort":1,"title":"Chapter 1 - 1: A"}]}"#;
+        assert!(chapters_from_list("x", short).is_none());
+        assert!(chapters_from_list("x", br#"{"recordsTotal":0,"data":[]}"#).is_none());
+        let fractional = br#"{"recordsTotal":1,"data":[{"n_sort":1.5,"title":"Chapter 1.5 - A"}]}"#;
+        assert!(chapters_from_list("x", fractional).is_none());
+        assert!(chapters_from_list("x", br#"{"message":"Server Error"}"#).is_none());
+        assert!(chapters_from_list("x", b"<html>Too Many Requests</html>").is_none());
+    }
+
+    #[test]
+    fn entities_decode_and_stray_ampersands_stay() {
+        assert_eq!(decode_entities("A &amp; B &lt;C&gt; &quot;D&quot; &#039;E&#39; &#x2014; &apos;"), "A & B <C> \"D\" 'E' — '");
+        assert_eq!(decode_entities("Tom & Jerry &unknown; &#xZZ;"), "Tom & Jerry &unknown; &#xZZ;");
     }
 }
