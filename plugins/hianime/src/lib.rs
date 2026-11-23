@@ -14,6 +14,7 @@ use ito_rs::{
         FilterItem, HomeComponent, HomeComponentValue, HomeLayout, LinkValue, Listing,
         anime::{Anime, Episode, PageResult, Video},
     },
+    net::NetResponse,
     provider::AnimeProvider,
 };
 
@@ -24,8 +25,8 @@ mod markup;
 mod megaplay;
 mod parse;
 
-use http::{Failure, HostNet, Transport, Upstream};
-use megaplay::{CaptionCache, Lang};
+use http::{Failure, GetRequest, HostNet, Transport, Upstream};
+use megaplay::{CaptionCache, Lang, Stream, resolve_captions, sources_url};
 
 pub struct HiAnimeProvider;
 
@@ -182,29 +183,183 @@ fn anime_update<N: Transport>(
     Ok(anime)
 }
 
-/// Resolves one language through the stream hop and MegaPlay.
-///
-/// The hop is classed by the URL requested (hianime.ms), even when the host follows its
-/// redirect to MegaPlay. Blocks on the MegaPlay steps name MegaPlay.
+/// One language's stream, from its hop page to its video.
+struct Lane {
+    lang: Lang,
+    stage: Stage,
+}
+
+/// Where a language's stream stands between waves.
+enum Stage {
+    /// The hop page named the player: its getSources request is next.
+    Sources {
+        embed_url: String,
+        sources_url: String,
+    },
+    /// getSources loaded: the caption files are next.
+    Captions { stream: Stream, quality: String },
+    /// Nothing more to send: the video, or the failure that ended this language.
+    Done(Result<Video, Failure>),
+}
+
+/// Builds a language's first stage from its hop page. The hop page names the player, so a page
+/// without one ends the language here.
+fn hop_stage(episode_id: &str, lang: Lang, hop: Result<NetResponse, Failure>) -> Stage {
+    let hop = match hop {
+        Ok(hop) => hop,
+        Err(failure) => return Stage::Done(Err(failure)),
+    };
+    let embed_url = megaplay::embed_url(episode_id, lang);
+    match sources_url(&String::from_utf8_lossy(&hop.body), lang) {
+        Ok(sources_url) => Stage::Sources {
+            embed_url,
+            sources_url,
+        },
+        Err(error) => Stage::Done(Err(error.into())),
+    }
+}
+
+/// Sends getSources for every language waiting on it, together, and advances each language on its
+/// answer.
+fn sources_wave<N: Transport>(net: &N, lanes: Vec<Lane>) -> Vec<Lane> {
+    let requests: Vec<GetRequest<'_>> = lanes
+        .iter()
+        .filter_map(|lane| match &lane.stage {
+            Stage::Sources {
+                embed_url,
+                sources_url,
+            } => Some(GetRequest {
+                url: sources_url.as_str(),
+                headers: vec![
+                    ("Referer", embed_url.as_str()),
+                    ("X-Requested-With", "XMLHttpRequest"),
+                ],
+            }),
+            _ => None,
+        })
+        .collect();
+    let mut answers = http::get_all(net, Upstream::MegaPlay, requests).into_iter();
+    lanes
+        .into_iter()
+        .map(|Lane { lang, stage }| {
+            let stage = match stage {
+                Stage::Sources { .. } => match answers.next() {
+                    Some(answer) => captions_stage(lang, answer),
+                    None => Stage::Done(Err(Failure::Other(Error::Net(
+                        "MegaPlay getSources answer is missing".to_string(),
+                    )))),
+                },
+                stage => stage,
+            };
+            Lane { lang, stage }
+        })
+        .collect()
+}
+
+/// Reads a getSources answer into the stream it describes.
+fn captions_stage(lang: Lang, answer: Result<NetResponse, Failure>) -> Stage {
+    let stream = answer.and_then(|sources| Stream::from_sources(&sources.body).map_err(Failure::from));
+    match stream {
+        Ok(stream) => Stage::Captions {
+            stream,
+            quality: format!("Auto {} Ryu", lang.label()),
+        },
+        Err(failure) => Stage::Done(Err(failure)),
+    }
+}
+
+/// Inlines the caption files of every language waiting on them, in language order, and builds each
+/// of those languages' video.
+fn captions_wave<N: Transport>(
+    net: &N,
+    lanes: Vec<Lane>,
+    captions: &mut CaptionCache,
+) -> Vec<Lane> {
+    let files: Vec<&str> = lanes
+        .iter()
+        .filter_map(|lane| match &lane.stage {
+            Stage::Captions { stream, .. } => Some(stream.caption_files()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let mut indices = resolve_captions(net, &files, captions).into_iter();
+    lanes
+        .into_iter()
+        .map(|Lane { lang, stage }| {
+            let stage = match stage {
+                Stage::Captions { stream, quality } => {
+                    Stage::Done(Ok(stream.into_video(&quality, &mut indices, captions)))
+                }
+                stage => stage,
+            };
+            Lane { lang, stage }
+        })
+        .collect()
+}
+
+/// Returns the call's block once the sub-then-dub walk would have reached it: the first blocked
+/// language, provided no earlier language still waits on a request. Otherwise the lanes carry on.
+fn settle(lanes: Vec<Lane>) -> Result<Vec<Lane>, Failure> {
+    let mut waiting = false;
+    let mut kept = Vec::with_capacity(lanes.len());
+    for lane in lanes {
+        match lane.stage {
+            Stage::Done(Err(blocked @ Failure::Blocked { .. })) if !waiting => {
+                return Err(blocked);
+            }
+            Stage::Sources { .. } | Stage::Captions { .. } => waiting = true,
+            Stage::Done(_) => {}
+        }
+        kept.push(lane);
+    }
+    Ok(kept)
+}
+
+/// Resolves both languages' streams in waves: the hop pages, then getSources, then the caption
+/// files. Each wave sends only what the sub-then-dub walk would still send, so a block ends the
+/// call with the same error that walk gave.
 fn language_videos<N: Transport>(
     net: &N,
     token: &str,
     episode_id: &str,
-    lang: Lang,
     captions: &mut CaptionCache,
 ) -> Result<Vec<Video>, Failure> {
-    let hop_url = format!("{BASE_URL}/stream/{token}/{}", lang.as_str());
-    let hop = http::get(net, Upstream::Site, &hop_url, &[("Referer", SITE_REFERER)])?;
-    let embed = megaplay::embed_url(episode_id, lang);
-    let quality = format!("Auto {} Ryu", lang.label());
-    megaplay::extract(
-        net,
-        &embed,
-        &String::from_utf8_lossy(&hop.body),
-        lang,
-        &quality,
-        captions,
-    )
+    let hop_urls: Vec<String> = Lang::ALL
+        .iter()
+        .map(|lang| format!("{BASE_URL}/stream/{token}/{}", lang.as_str()))
+        .collect();
+    let hop_requests: Vec<GetRequest<'_>> = hop_urls
+        .iter()
+        .map(|url| GetRequest {
+            url: url.as_str(),
+            headers: vec![("Referer", SITE_REFERER)],
+        })
+        .collect();
+    let hops = http::get_all(net, Upstream::Site, hop_requests);
+    let lanes: Vec<Lane> = Lang::ALL
+        .into_iter()
+        .zip(hops)
+        .map(|(lang, hop)| Lane {
+            lang,
+            stage: hop_stage(episode_id, lang, hop),
+        })
+        .collect();
+    let lanes = settle(lanes)?;
+    let lanes = settle(sources_wave(net, lanes))?;
+    let lanes = settle(captions_wave(net, lanes, captions))?;
+
+    let mut videos = Vec::new();
+    for lane in lanes {
+        match lane.stage {
+            Stage::Done(Ok(video)) => videos.push(video),
+            // One language failing does not hide the other, and the call succeeds with what
+            // loaded. Only a call where neither language loads fails, in `video_list`. The log
+            // line names the language and never the URL or the error.
+            _ => http::note(&format!("HiAnime: {} stream unavailable", lane.lang.label())),
+        }
+    }
+    Ok(videos)
 }
 
 fn video_list<N: Transport>(net: &N, episode: &Episode) -> Result<Vec<Video>, Failure> {
@@ -216,21 +371,9 @@ fn video_list<N: Transport>(net: &N, episode: &Episode) -> Result<Vec<Video>, Fa
     let episode_id = parse::episode_id_from_token(&token)
         .ok_or_else(|| Error::Html("HiAnime stream token is malformed".to_string()))?;
 
-    let mut videos = Vec::new();
     // Sub and dub share their caption tracks, so the cache lives for the whole call.
     let mut captions = CaptionCache::new();
-    for lang in Lang::ALL {
-        match language_videos(net, &token, &episode_id, lang, &mut captions) {
-            Ok(found) => videos.extend(found),
-            Err(blocked @ Failure::Blocked { .. }) => return Err(blocked),
-            // One language failing does not hide the other, and the call succeeds with what
-            // loaded. Only a call where neither language loads fails, below. The log line
-            // names the language and never the URL or the error.
-            Err(Failure::Other(_)) => {
-                http::note(&format!("HiAnime: {} stream unavailable", lang.label()));
-            }
-        }
-    }
+    let videos = language_videos(net, &token, &episode_id, &mut captions)?;
     if videos.is_empty() {
         return Err(Error::Net(
             "HiAnime has no playable sub or dub stream for this episode".to_string(),
@@ -426,6 +569,45 @@ mod tests {
                 status: 403
             }
         ));
+    }
+
+    #[test]
+    fn a_blocked_dub_hop_names_the_block_once_sub_has_settled() {
+        let net = Canned::new()
+            .on(&format!("{BASE_URL}{EPISODE_KEY}"), 200, watch_page())
+            .on(&hop("sub"), 200, EMBED_HTML)
+            .on(SOURCES_SUB, 200, sources(json!([])))
+            .on(&hop("dub"), 403, "");
+        let Err(failure) = video_list(&net, &episode()) else {
+            panic!("expected a block");
+        };
+        assert!(matches!(
+            failure,
+            Failure::Blocked {
+                upstream: Upstream::Site,
+                status: 403
+            }
+        ));
+    }
+
+    #[test]
+    fn a_sub_block_wins_over_a_dub_block_and_dub_sources_are_not_requested() {
+        let net = Canned::new()
+            .on(&format!("{BASE_URL}{EPISODE_KEY}"), 200, watch_page())
+            .on(&hop("sub"), 200, EMBED_HTML)
+            .on(SOURCES_SUB, 403, "")
+            .on(&hop("dub"), 403, "");
+        let Err(failure) = video_list(&net, &episode()) else {
+            panic!("expected a block");
+        };
+        assert!(matches!(
+            failure,
+            Failure::Blocked {
+                upstream: Upstream::MegaPlay,
+                status: 403
+            }
+        ));
+        assert_eq!(net.sent_to(SOURCES_DUB), 0);
     }
 
     #[test]

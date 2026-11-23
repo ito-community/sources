@@ -73,10 +73,25 @@ impl From<Failure> for Error {
     }
 }
 
-/// Sends one GET and returns the raw response. The host implements it in the plugin, and
-/// tests implement it with canned responses.
+/// One GET for [`get_all`]: its URL and the headers, without the User-Agent [`get_all`] adds.
+pub struct GetRequest<'a> {
+    pub url: &'a str,
+    pub headers: Vec<(&'a str, &'a str)>,
+}
+
+/// Sends GETs. The host implements it in the plugin, and tests implement it with canned
+/// responses.
 pub trait Transport {
     fn send(&self, url: &str, headers: &[(&str, &str)]) -> ito_rs::Result<NetResponse>;
+
+    /// Sends `requests` together and returns one result per request, in the same order. The
+    /// default sends them one at a time.
+    fn send_all(&self, requests: &[GetRequest<'_>]) -> Vec<ito_rs::Result<NetResponse>> {
+        requests
+            .iter()
+            .map(|get| self.send(get.url, &get.headers))
+            .collect()
+    }
 }
 
 /// The host network, through `ito_rs`.
@@ -89,6 +104,20 @@ impl Transport for HostNet {
             request.header(name, value);
         }
         request.send()
+    }
+
+    fn send_all(&self, requests: &[GetRequest<'_>]) -> Vec<ito_rs::Result<NetResponse>> {
+        let requests: Vec<Request> = requests
+            .iter()
+            .map(|get| {
+                let mut request = Request::get(get.url);
+                for &(name, value) in &get.headers {
+                    request.header(name, value);
+                }
+                request
+            })
+            .collect();
+        Request::send_all(&requests)
     }
 }
 
@@ -105,6 +134,29 @@ pub fn get<N: Transport>(
     all.extend_from_slice(headers);
     let response = net.send(url, &all)?;
     check(upstream, response)
+}
+
+/// Like [`get`], for several requests sent together. Each response is classified as [`get`]
+/// classifies it, and the results keep the order of `requests`.
+pub fn get_all<N: Transport>(
+    net: &N,
+    upstream: Upstream,
+    requests: Vec<GetRequest<'_>>,
+) -> Vec<Result<NetResponse, Failure>> {
+    let requests: Vec<GetRequest<'_>> = requests
+        .into_iter()
+        .map(|mut get| {
+            get.headers.insert(0, ("User-Agent", USER_AGENT));
+            get
+        })
+        .collect();
+    net.send_all(&requests)
+        .into_iter()
+        .map(|result| match result {
+            Ok(response) => check(upstream, response),
+            Err(error) => Err(Failure::from(error)),
+        })
+        .collect()
 }
 
 /// Classifies a response.
