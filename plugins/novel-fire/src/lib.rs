@@ -4,11 +4,23 @@ use ito_rs::models::{ContentKind, FilterItem, Listing, Page, PageContent, HomeLa
 use ito_rs::models::novel::{Novel, Chapter, PageResult, Status as NovelStatus, ContentRating};
 use ito_rs::net::Request;
 use ito_rs::html::Node;
-use ito_rs::Result;
+use ito_rs::{Error, Result};
 
 const BASE_URL: &str = "https://novelfire.net";
 
 pub struct NovelFire;
+
+/// The page at `url`, parsed. Any answer but a success is an error, never an empty page: a rate-limit or error
+/// page read as one would end a chapter list early or show up as a chapter's text.
+fn fetch_page(url: &str) -> Result<Node> {
+    let res = Request::get(url).send()?;
+    match res.status {
+        200..=299 => Ok(Node::new(&res.body)),
+        404 => Err(Error::NotFound("Novel Fire doesn't have this page anymore.".to_string())),
+        429 => Err(Error::Server("Novel Fire is limiting requests. Try again in a minute.".to_string())),
+        status => Err(Error::Server(format!("Novel Fire answered with HTTP {status}."))),
+    }
+}
 
 /// Builds one chapter from a row of the chapter list: the anchor's `href`, its `title`
 /// attribute, and the row's chapter number text when the row has one.
@@ -100,8 +112,7 @@ impl NovelProvider for NovelFire {
             _ => format!("{}/ranking", BASE_URL),
         };
 
-        let res = Request::get(&url).send()?;
-        let html = Node::new(&res.body);
+        let html = fetch_page(&url)?;
         let mut entries = Vec::new();
         
         let novel_nodes = html.select(".rank-novels .novel-item")?;
@@ -163,8 +174,7 @@ impl NovelProvider for NovelFire {
             page
         );
 
-        let res = Request::get(&url).send()?;
-        let html = Node::new(&res.body);
+        let html = fetch_page(&url)?;
 
         let mut entries = Vec::new();
         let novel_nodes = html.select(".novel-list.chapters > li.novel-item")?;
@@ -213,8 +223,7 @@ impl NovelProvider for NovelFire {
 
         if needs_details {
             let url = format!("{}/book/{}", BASE_URL, novel.key);
-            let res = Request::get(&url).send()?;
-            let html = Node::new(&res.body);
+            let html = fetch_page(&url)?;
 
             let cover_node = html.select(".cover img")?.into_iter().next();
             if let Some(n) = cover_node
@@ -262,8 +271,7 @@ impl NovelProvider for NovelFire {
 
             loop {
                 let url = format!("{}/book/{}/chapters?page={}", BASE_URL, novel.key, page);
-                let res = Request::get(&url).send()?;
-                let html = Node::new(&res.body);
+                let html = fetch_page(&url)?;
                 let chapter_nodes = html.select(".chapter-list > li")?;
 
                 if chapter_nodes.is_empty() {
@@ -305,11 +313,13 @@ impl NovelProvider for NovelFire {
 
     fn get_chapter_content(novel: Novel, chapter: Chapter) -> Result<Vec<Page>> {
         let url = format!("{}/book/{}/{}", BASE_URL, novel.key, chapter.key);
-        let res = Request::get(&url).send()?;
-        let html = Node::new(&res.body);
+        let html = fetch_page(&url)?;
 
         let mut content_list = Vec::new();
         let p_nodes = html.select("#content p")?;
+        if p_nodes.is_empty() {
+            return Err(Error::Server("Novel Fire's page for this chapter has no chapter text.".to_string()));
+        }
 
         for (index, node) in p_nodes.into_iter().enumerate() {
             let content = node.text()?;
