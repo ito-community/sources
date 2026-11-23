@@ -34,10 +34,15 @@ fn string(v: &Value, key: &str) -> Option<String> {
     let s = text(v, key).trim();
     (!s.is_empty()).then(|| s.to_owned())
 }
+/// A GET request with the Referer that Vortex's pages expect.
+fn get_request(url: &str) -> Request {
+    let mut request = Request::get(url);
+    request.header("Referer", &format!("{ORIGIN}/"));
+    request
+}
+
 fn get(url: &str) -> Result<Vec<u8>> {
-    let response = Request::get(url)
-        .header("Referer", &format!("{ORIGIN}/"))
-        .send()?;
+    let response = get_request(url).send()?;
     classify(response.status, response.body)
 }
 /// Maps a response to an error category. A 403 is an access gate only when the body is a
@@ -61,7 +66,12 @@ fn needs_login() -> Error {
     )
 }
 fn json(url: &str) -> Result<Value> {
-    serde_json::from_slice(&get(url)?).map_err(|_| invalid())
+    json_body(get(url)?)
+}
+
+/// Parses a JSON body whose status has already passed the check in `classify`.
+fn json_body(body: Vec<u8>) -> Result<Value> {
+    serde_json::from_slice(&body).map_err(|_| invalid())
 }
 fn html(url: &str) -> Result<String> {
     let body = String::from_utf8(get(url)?).map_err(|_| invalid())?;
@@ -293,8 +303,8 @@ fn tag(value: &str) -> Result<&str> {
         )),
     }
 }
-fn browse(query: &str, page: i32, order: &str) -> Result<MediaPageResult> {
-    let page = page.max(1) as u64;
+/// The catalog URL for one page of a browse order. Pages are 1-based.
+fn browse_url(query: &str, page: u64, order: &str) -> Result<String> {
     let mut url = Url::parse(&format!("{API}/posts")).map_err(|_| invalid())?;
     url.query_pairs_mut()
         .append_pair("page", &page.to_string())
@@ -302,7 +312,12 @@ fn browse(query: &str, page: i32, order: &str) -> Result<MediaPageResult> {
         .append_pair("searchTerm", query)
         .append_pair("tag", tag(order)?)
         .append_pair("isNovel", "false");
-    catalog(&json(url.as_str())?, page)
+    Ok(url.into())
+}
+
+fn browse(query: &str, page: i32, order: &str) -> Result<MediaPageResult> {
+    let page = page.max(1) as u64;
+    catalog(&json(&browse_url(query, page, order)?)?, page)
 }
 fn catalog(data: &Value, page: u64) -> Result<MediaPageResult> {
     let posts = data["posts"].as_array().ok_or_else(invalid)?;
@@ -421,13 +436,21 @@ fn reader(document: &str, requested: &str) -> Result<Vec<Page>> {
 impl SourceProvider for Vortex {
     const KINDS: &'static [MediaKind] = &[MediaKind::Manga];
     fn get_home() -> Result<HomeLayout> {
-        let mut components = Vec::new();
-        for (id, name) in [
+        const HOME_SECTIONS: [(&str, &str); 3] = [
             ("latestUpdate", "Latest updates"),
             ("trending", "Trending"),
             ("new", "New series"),
-        ] {
-            let entries = browse("", 1, id)?
+        ];
+        // The sections don't depend on each other, so their first pages go out together.
+        let requests = HOME_SECTIONS
+            .iter()
+            .map(|&(id, _)| browse_url("", 1, id).map(|url| get_request(&url)))
+            .collect::<Result<Vec<_>>>()?;
+        let mut components = Vec::new();
+        for ((id, name), response) in HOME_SECTIONS.into_iter().zip(Request::send_all(&requests)) {
+            let response = response?;
+            let value = json_body(classify(response.status, response.body)?)?;
+            let entries = catalog(&value, 1)?
                 .entries
                 .into_iter()
                 .filter_map(|v| {
