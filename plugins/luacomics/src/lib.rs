@@ -12,6 +12,13 @@ use models::{ApiChapter, SeriesResponse, ApiSeries};
 const BASE_URL: &str = "https://luacomic.org";
 const API_URL: &str = "https://api.luacomic.org";
 
+/// A GET to the comic API. The API expects the site as its Referer.
+fn api_request(url: String) -> Request {
+    let mut request = Request::get(url);
+    request.header("Referer", "https://luacomic.org/");
+    request
+}
+
 struct LuaComic;
 
 impl LuaComic {
@@ -422,11 +429,26 @@ impl MangaProvider for LuaComic {
     }
 
     fn get_home() -> Result<HomeLayout> {
+        // The five home requests are independent, so they go out together. Each section keeps its
+        // own fallback: a section whose request failed is left out.
+        let mut responses = Request::send_all(&[
+            Request::get(BASE_URL),
+            api_request(format!("{}/trending?type=daily", API_URL)),
+            api_request(format!("{}/trending?type=weekly", API_URL)),
+            api_request(format!("{}/trending?type=all", API_URL)),
+            api_request(format!("{}/query?page=1&perPage=20&series_type=Comic&orderBy=latest&adult=true&status=All&tags_ids=[]", API_URL)),
+        ])
+        .into_iter();
+        let home = responses.next();
+        let daily = responses.next();
+        let weekly = responses.next();
+        let all = responses.next();
+        let latest = responses.next();
         let mut components = Vec::new();
         let mut featured_mangas: Vec<Manga> = Vec::new();
         let mut recommended_mangas: Vec<Manga> = Vec::new();
 
-        if let Ok(res) = Request::get(BASE_URL).send() {
+        if let Some(Ok(res)) = home {
             let html = Node::new(&res.body);
 
             // 1. Featured
@@ -596,9 +618,7 @@ impl MangaProvider for LuaComic {
         }
 
         // Fetch Trending Daily
-        if let Ok(res) = Request::get(format!("{}/trending?type=daily", API_URL))
-            .header("Referer", "https://luacomic.org/")
-            .send()
+        if let Some(Ok(res)) = daily
             && let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
                 let entries: Vec<Manga> = series_list.into_iter().map(LuaComic::api_series_to_manga).collect();
                 if !entries.is_empty() {
@@ -611,9 +631,7 @@ impl MangaProvider for LuaComic {
             }
 
         // Fetch Trending Weekly
-        if let Ok(res) = Request::get(format!("{}/trending?type=weekly", API_URL))
-            .header("Referer", "https://luacomic.org/")
-            .send()
+        if let Some(Ok(res)) = weekly
             && let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
                 let entries: Vec<Manga> = series_list.into_iter().map(LuaComic::api_series_to_manga).collect();
                 if !entries.is_empty() {
@@ -626,9 +644,7 @@ impl MangaProvider for LuaComic {
             }
 
         // Fetch Trending All Time
-        if let Ok(res) = Request::get(format!("{}/trending?type=all", API_URL))
-            .header("Referer", "https://luacomic.org/")
-            .send()
+        if let Some(Ok(res)) = all
             && let Ok(series_list) = serde_json::from_slice::<Vec<ApiSeries>>(&res.body) {
                 let entries: Vec<Manga> = series_list.into_iter().map(LuaComic::api_series_to_manga).collect();
                 if !entries.is_empty() {
@@ -641,9 +657,7 @@ impl MangaProvider for LuaComic {
             }
 
         // Fetch Latest Updates
-        if let Ok(res) = Request::get(format!("{}/query?page=1&perPage=20&series_type=Comic&orderBy=latest&adult=true&status=All&tags_ids=[]", API_URL))
-            .header("Referer", "https://luacomic.org/")
-            .send()
+        if let Some(Ok(res)) = latest
             && let Ok(json) = serde_json::from_slice::<SeriesResponse>(&res.body) {
                 let entries: Vec<Manga> = json.data.into_iter().map(LuaComic::api_series_to_manga).collect();
                 if !entries.is_empty() {
