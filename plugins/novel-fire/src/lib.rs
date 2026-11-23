@@ -2,7 +2,7 @@ use ito_rs::export_novel_plugin;
 use ito_rs::provider::NovelProvider;
 use ito_rs::models::{ContentKind, FilterItem, Listing, Page, PageContent, HomeLayout, HomeComponent, HomeComponentValue};
 use ito_rs::models::novel::{Novel, Chapter, PageResult, Status as NovelStatus, ContentRating};
-use ito_rs::net::Request;
+use ito_rs::net::{NetResponse, Request};
 use ito_rs::html::Node;
 use ito_rs::{Error, Result};
 use serde::Deserialize;
@@ -11,16 +11,67 @@ const BASE_URL: &str = "https://novelfire.net";
 
 pub struct NovelFire;
 
-/// The page at `url`, parsed. Any answer but a success is an error, never an empty page: a rate-limit or error
+/// Where Novel Fire now sends chapter readers: a loading page on this host, whose script points at the chapter
+/// on `CHAPTER_MIRROR`. Only these hosts are followed, and only to a chapter page.
+const REDIRECT_PAGE: &str = "https://readnovel.site/";
+const CHAPTER_MIRROR: &str = "https://novelphoenix.com/novel/";
+
+/// The body of a successful answer. Any other answer is an error, never an empty page: a rate-limit or error
 /// page read as one would end a chapter list early or show up as a chapter's text.
-fn fetch_page(url: &str) -> Result<Node> {
-    let res = Request::get(url).send()?;
+fn success_body(res: NetResponse) -> Result<Vec<u8>> {
     match res.status {
-        200..=299 => Ok(Node::new(&res.body)),
+        200..=299 => Ok(res.body),
         404 => Err(Error::NotFound("Novel Fire doesn't have this page anymore.".to_string())),
         429 => Err(Error::Server("Novel Fire is limiting requests. Try again in a minute.".to_string())),
         status => Err(Error::Server(format!("Novel Fire answered with HTTP {status}."))),
     }
+}
+
+/// The page at `url`, parsed.
+fn fetch_page(url: &str) -> Result<Node> {
+    Ok(Node::new(&success_body(Request::get(url).send()?)?))
+}
+
+/// A chapter's page. Novel Fire moves chapters to its mirror through a loading page: when the page has no
+/// chapter text and points at the chapter on the mirror, the mirror's page is read instead.
+fn chapter_page(url: &str) -> Result<Node> {
+    let mut res = Request::get(url).send()?;
+    // A host that doesn't follow a redirect to another site answers with the redirect itself.
+    if (300..=399).contains(&res.status)
+        && let Some(location) = header(&res, "location").filter(|l| l.starts_with(REDIRECT_PAGE))
+    {
+        res = Request::get(&location).send()?;
+    }
+    let body = success_body(res)?;
+    let html = Node::new(&body);
+    if !html.select("#content p")?.is_empty() {
+        return Ok(html);
+    }
+    match mirror_target(&String::from_utf8_lossy(&body)) {
+        Some(target) => fetch_page(&target),
+        None => Ok(html),
+    }
+}
+
+fn header(res: &NetResponse, name: &str) -> Option<String> {
+    res.headers
+        .iter()
+        .find(|(key, _)| key.eq_ignore_ascii_case(name))
+        .map(|(_, value)| value.clone())
+}
+
+/// The mirror chapter a loading page's script sends the reader to, without its query. `None` for any other page
+/// or any other destination.
+fn mirror_target(page: &str) -> Option<String> {
+    let assignment = &page[page.find("window.location.href")?..];
+    let quoted = &assignment[assignment.find('"')? + 1..];
+    let url = quoted[..quoted.find('"')?].replace("\\/", "/");
+    let url = url.split(['?', '#']).next()?.to_string();
+    let path = url.strip_prefix(CHAPTER_MIRROR)?;
+    let valid = !path.is_empty()
+        && path.split('/').count() == 2
+        && path.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'/');
+    valid.then_some(url)
 }
 
 /// Builds one chapter from a row of the chapter list: the anchor's `href`, its `title`
@@ -426,7 +477,7 @@ impl NovelProvider for NovelFire {
 
     fn get_chapter_content(novel: Novel, chapter: Chapter) -> Result<Vec<Page>> {
         let url = format!("{}/book/{}/{}", BASE_URL, novel.key, chapter.key);
-        let html = fetch_page(&url)?;
+        let html = chapter_page(&url)?;
 
         let mut content_list = Vec::new();
         let p_nodes = html.select("#content p")?;
@@ -491,7 +542,7 @@ export_novel_plugin!(NovelFire);
 
 #[cfg(test)]
 mod tests {
-    use super::{chapter_from_row, chapters_from_list, decode_entities};
+    use super::{chapter_from_row, chapters_from_list, decode_entities, mirror_target};
 
     /// Chapter-list rows of a saved page, as (anchor href, anchor title, chapter number text).
     const CHAPTER_ROWS: &[(&str, &str, &str)] = &[
@@ -580,5 +631,26 @@ mod tests {
     fn entities_decode_and_stray_ampersands_stay() {
         assert_eq!(decode_entities("A &amp; B &lt;C&gt; &quot;D&quot; &#039;E&#39; &#x2014; &apos;"), "A & B <C> \"D\" 'E' — '");
         assert_eq!(decode_entities("Tom & Jerry &unknown; &#xZZ;"), "Tom & Jerry &unknown; &#xZZ;");
+    }
+
+    /// The loading page Novel Fire sends chapter readers through points at the chapter on its mirror.
+    #[test]
+    fn the_loading_page_leads_only_to_a_chapter_on_the_mirror() {
+        let page = r#"<html><head><title>Loading...</title></head><body><script>setTimeout(() => {
+            window.location.href = "https:\/\/novelphoenix.com\/novel\/reverend-insanity\/chapter-1168?noti=1";
+        }, 5);</script></body></html>"#;
+        assert_eq!(
+            mirror_target(page).as_deref(),
+            Some("https://novelphoenix.com/novel/reverend-insanity/chapter-1168")
+        );
+        for elsewhere in [
+            r#"window.location.href = "https://evil.example/novel/a/chapter-1";"#,
+            r#"window.location.href = "https://novelphoenix.com.evil/novel/a/chapter-1";"#,
+            r#"window.location.href = "https://novelphoenix.com/novel/a";"#,
+            r#"window.location.href = "https://novelphoenix.com/novel/a/chapter-1/../../x";"#,
+            "<html>no script</html>",
+        ] {
+            assert_eq!(mirror_target(elsewhere), None, "{elsewhere}");
+        }
     }
 }
