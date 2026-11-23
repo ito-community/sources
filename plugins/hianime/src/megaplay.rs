@@ -5,7 +5,7 @@
 //! decrypts `enc` when present, and builds the playable video with its caption tracks.
 //! Intro and outro data are not parsed: Ito's model has no field for them.
 
-use crate::http::{self, Failure, Transport, USER_AGENT, Upstream};
+use crate::http::{self, GetRequest, Transport, USER_AGENT, Upstream};
 use crate::markup;
 use aes::cipher::{BlockModeDecrypt, KeyIvInit, block_padding::Pkcs7};
 use base64::{
@@ -86,52 +86,107 @@ pub fn embed_url(episode_id: &str, lang: Lang) -> String {
     format!("{ORIGIN}/stream/s-2/{episode_id}/{}", lang.as_str())
 }
 
-/// Resolves the playable Ryu stream from an already fetched MegaPlay embed page.
-///
-/// `embed_url` is the `s-2` embed the hop resolved to, and it is the Referer for getSources.
-/// `quality` is the label the caller shows for this stream. `captions` is shared by every
-/// call of one provider request.
-pub fn extract<N: Transport>(
-    net: &N,
-    embed_url: &str,
-    embed_html: &str,
-    lang: Lang,
-    quality: &str,
-    captions: &mut CaptionCache,
-) -> Result<Vec<Video>, Failure> {
+/// Returns the getSources URL for the player on an embed page.
+pub fn sources_url(embed_html: &str, lang: Lang) -> Result<String, Error> {
     let player_id = find_player_id(embed_html)
         .ok_or_else(|| Error::Html("MegaPlay player id not found".to_string()))?;
-    let sources_url = format!(
+    Ok(format!(
         "{ORIGIN}/stream/getSources?id={player_id}&type={}",
         lang.as_str()
-    );
-    let response = http::get(
-        net,
-        Upstream::MegaPlay,
-        &sources_url,
-        &[
-            ("Referer", embed_url),
-            ("X-Requested-With", "XMLHttpRequest"),
-        ],
-    )?;
-    let json: serde_json::Value = serde_json::from_slice(&response.body)
-        .map_err(|_| Error::Html("MegaPlay sources are not JSON".to_string()))?;
-    let file =
-        file_url(&json).ok_or_else(|| Error::Html("MegaPlay sources have no file".to_string()))?;
-    let subtitles = subtitles(net, &json, captions)?;
+    ))
+}
 
-    let headers = HashMap::from([
-        ("Referer".to_string(), ORIGIN_REFERER.to_string()),
-        ("Origin".to_string(), ORIGIN.to_string()),
-        ("User-Agent".to_string(), USER_AGENT.to_string()),
-    ]);
-    Ok(vec![Video {
-        url: file,
-        quality: quality.to_string(),
-        headers: Some(headers),
-        audio_tracks: None,
-        subtitles: Some(subtitles),
-    }])
+/// A stream read from its getSources response, before its caption files are fetched.
+pub struct Stream {
+    file: String,
+    /// The caption tracks, in the order the response lists them.
+    tracks: Vec<Track>,
+}
+
+/// A caption track: the file to inline and the label it is shown with.
+struct Track {
+    file: String,
+    label: String,
+}
+
+impl Stream {
+    /// Reads a getSources response. A response that is not JSON, or names no stream file, is an
+    /// error.
+    pub fn from_sources(body: &[u8]) -> Result<Self, Error> {
+        let json: serde_json::Value = serde_json::from_slice(body)
+            .map_err(|_| Error::Html("MegaPlay sources are not JSON".to_string()))?;
+        let file = file_url(&json)
+            .ok_or_else(|| Error::Html("MegaPlay sources have no file".to_string()))?;
+        Ok(Self {
+            file,
+            tracks: caption_tracks(&json),
+        })
+    }
+
+    /// The caption files, in track order.
+    pub fn caption_files(&self) -> impl Iterator<Item = &str> {
+        self.tracks.iter().map(|track| track.file.as_str())
+    }
+
+    /// Builds the stream's video. `indices` holds each caption track's index in the cache, in
+    /// track order, as [`resolve_captions`] returns them.
+    pub fn into_video(
+        self,
+        quality: &str,
+        indices: &mut impl Iterator<Item = Option<usize>>,
+        captions: &CaptionCache,
+    ) -> Video {
+        let mut subtitles = Vec::new();
+        for (track, index) in self.tracks.iter().zip(indices) {
+            if let Some(index) = index {
+                subtitles.push(Subtitle {
+                    url: captions.inlined[index].clone(),
+                    language: track.label.clone(),
+                    format: "vtt".to_string(),
+                    is_hardsub: false,
+                });
+            }
+        }
+        subtitles.push(Subtitle {
+            url: vtt_data_url(b"WEBVTT\n\n"),
+            language: "Off".to_string(),
+            format: "vtt".to_string(),
+            is_hardsub: false,
+        });
+
+        let headers = HashMap::from([
+            ("Referer".to_string(), ORIGIN_REFERER.to_string()),
+            ("Origin".to_string(), ORIGIN.to_string()),
+            ("User-Agent".to_string(), USER_AGENT.to_string()),
+        ]);
+        Video {
+            url: self.file,
+            quality: quality.to_string(),
+            headers: Some(headers),
+            audio_tracks: None,
+            subtitles: Some(subtitles),
+        }
+    }
+}
+
+/// The caption tracks of a getSources response, in order. Only `captions` tracks are inlined.
+fn caption_tracks(json: &serde_json::Value) -> Vec<Track> {
+    json.get("tracks")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|track| track.get("kind").and_then(serde_json::Value::as_str) == Some("captions"))
+        .filter_map(|track| {
+            Some(Track {
+                file: track.get("file")?.as_str()?.to_string(),
+                label: track
+                    .get("label")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("Unknown")
+                    .to_string(),
+            })
+        })
+        .collect()
 }
 
 /// Reads the numeric player id from the element with `id="megaplay-player"`.
@@ -180,79 +235,70 @@ fn decrypt_source(enc: &str) -> Option<String> {
     json.get("file")?.as_str().map(str::to_string)
 }
 
-/// Builds the caption tracks: `captions` only, each inlined as a WebVTT data URL when it passes
-/// [`inline_caption`], followed by the "Off" entry that every stream carries.
+/// Inlines the caption files in `files`, in order, and returns each one's index in
+/// `captions.inlined`, or `None` when that track is not inlined.
 ///
-/// A track that cannot be inlined is dropped. Its remote URL would need MegaPlay's Origin and
-/// Referer, and `Subtitle` has no field to carry them.
-fn subtitles<N: Transport>(
+/// The result is the same as resolving the files one at a time: a file is fetched only when that
+/// walk would fetch it, and the files one round needs go out together.
+pub fn resolve_captions<N: Transport>(
     net: &N,
-    json: &serde_json::Value,
+    files: &[&str],
     captions: &mut CaptionCache,
-) -> Result<Vec<Subtitle>, Failure> {
-    let mut subtitles = Vec::new();
-    let tracks = json
-        .get("tracks")
-        .and_then(serde_json::Value::as_array)
-        .into_iter()
-        .flatten();
-    for track in tracks {
-        if track.get("kind").and_then(serde_json::Value::as_str) != Some("captions") {
+) -> Vec<Option<usize>> {
+    let mut fetched: HashMap<String, Option<Vec<u8>>> = HashMap::new();
+    let mut indices = Vec::with_capacity(files.len());
+    for (position, &file) in files.iter().enumerate() {
+        if let Some(known) = captions.tracks.get(file) {
+            indices.push(*known);
             continue;
         }
-        let Some(file) = track.get("file").and_then(serde_json::Value::as_str) else {
+        if captions.inlined.len() >= CAPTION_TRACK_BUDGET {
+            http::note("MegaPlay: caption track skipped, track budget reached");
+            indices.push(None);
             continue;
-        };
-        let Some(index) = inline_caption(net, file, captions)? else {
-            continue;
-        };
-        let language = track
-            .get("label")
-            .and_then(serde_json::Value::as_str)
-            .unwrap_or("Unknown");
-        subtitles.push(Subtitle {
-            url: captions.inlined[index].clone(),
-            language: language.to_string(),
-            format: "vtt".to_string(),
-            is_hardsub: false,
-        });
+        }
+        if !fetched.contains_key(file) {
+            // The walk fetches an unknown file while the track budget has room. Each of the next
+            // `room` unknown files is reached under budget whatever the earlier ones inline, so
+            // the walk fetches all of them too.
+            let room = CAPTION_TRACK_BUDGET - captions.inlined.len();
+            let mut round: Vec<&str> = Vec::new();
+            for &ahead in &files[position..] {
+                if round.len() == room {
+                    break;
+                }
+                if !captions.tracks.contains_key(ahead)
+                    && !fetched.contains_key(ahead)
+                    && !round.contains(&ahead)
+                {
+                    round.push(ahead);
+                }
+            }
+            let requests: Vec<GetRequest<'_>> = round
+                .iter()
+                .map(|&url| GetRequest {
+                    url,
+                    headers: vec![("Origin", ORIGIN), ("Referer", ORIGIN_REFERER)],
+                })
+                .collect();
+            let answers = http::get_all(net, Upstream::MegaPlay, requests);
+            for (url, answer) in round.into_iter().zip(answers) {
+                // A blocked or failed caption has no body, and only that track is dropped.
+                fetched.insert(url.to_string(), answer.ok().map(|response| response.body));
+            }
+        }
+        let body = fetched.remove(file).flatten();
+        indices.push(settle_caption(captions, file, body));
     }
-    subtitles.push(Subtitle {
-        url: vtt_data_url(b"WEBVTT\n\n"),
-        language: "Off".to_string(),
-        format: "vtt".to_string(),
-        is_hardsub: false,
-    });
-    Ok(subtitles)
+    indices
 }
 
-/// Returns the index of the track's data URL in `captions`, fetching its file at most once per
-/// provider call.
+/// Records a caption file's fetched body (`None` when the fetch failed) in the cache, and returns
+/// its index when it is inlined.
 ///
-/// `None` means the track is not inlined: its file was blocked or failed, is not WebVTT, is over
-/// [`CAPTION_LIMIT`], or the call has spent its track or byte budget. Only that track is dropped.
-/// A block on a caption does not fail the call.
-fn inline_caption<N: Transport>(
-    net: &N,
-    file: &str,
-    captions: &mut CaptionCache,
-) -> Result<Option<usize>, Failure> {
-    if let Some(known) = captions.tracks.get(file) {
-        return Ok(*known);
-    }
-    if captions.inlined.len() >= CAPTION_TRACK_BUDGET {
-        http::note("MegaPlay: caption track skipped, track budget reached");
-        return Ok(None);
-    }
-    let body = match http::get(
-        net,
-        Upstream::MegaPlay,
-        file,
-        &[("Origin", ORIGIN), ("Referer", ORIGIN_REFERER)],
-    ) {
-        Ok(response) => Some(response.body),
-        Err(Failure::Blocked { .. } | Failure::Other(_)) => None,
-    };
+/// `None` means the track is not inlined: its body is not WebVTT, is over [`CAPTION_LIMIT`], or
+/// would pass [`CAPTION_BYTE_BUDGET`]. Only that track is dropped.
+fn settle_caption(captions: &mut CaptionCache, file: &str, body: Option<Vec<u8>>) -> Option<usize> {
     let inlined = body.and_then(|body| {
         let fits = captions.inlined_bytes + body.len() <= CAPTION_BYTE_BUDGET;
         let url = caption_data_url(&body).filter(|_| fits)?;
@@ -270,7 +316,7 @@ fn inline_caption<N: Transport>(
         }
     };
     captions.tracks.insert(file.to_string(), index);
-    Ok(index)
+    index
 }
 
 /// Returns the WebVTT data URL for a caption body, or `None` when the body is not WebVTT or
@@ -300,6 +346,7 @@ fn vtt_data_url(body: &[u8]) -> String {
 mod tests {
     use super::*;
     use crate::fake::Canned;
+    use crate::http::Failure;
     use aes::cipher::{BlockModeEncrypt, KeyIvInit};
     use serde_json::json;
 
@@ -312,6 +359,32 @@ mod tests {
     fn sources(tracks: serde_json::Value) -> String {
         json!({ "sources": { "file": "https://cdn.example/master.m3u8" }, "tracks": tracks })
             .to_string()
+    }
+
+    /// One language's stream through the staged calls, as `language_videos` runs them after the
+    /// hop page. Blocks and failures come back as the call would report them.
+    fn extract<N: Transport>(
+        net: &N,
+        embed_url: &str,
+        embed_html: &str,
+        lang: Lang,
+        quality: &str,
+        captions: &mut CaptionCache,
+    ) -> Result<Vec<Video>, Failure> {
+        let sources = sources_url(embed_html, lang)?;
+        let response = http::get(
+            net,
+            Upstream::MegaPlay,
+            &sources,
+            &[
+                ("Referer", embed_url),
+                ("X-Requested-With", "XMLHttpRequest"),
+            ],
+        )?;
+        let stream = Stream::from_sources(&response.body)?;
+        let files: Vec<&str> = stream.caption_files().collect();
+        let mut indices = resolve_captions(net, &files, captions).into_iter();
+        Ok(vec![stream.into_video(quality, &mut indices, captions)])
     }
 
     #[test]
