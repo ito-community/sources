@@ -232,13 +232,13 @@ pub fn feed_url(
     with_query(&format!("{SITE}/api/home2/{endpoint}"), &pairs)
 }
 
-pub fn with_query(base: &str, pairs: &[(&str, String)]) -> String {
+pub fn with_query<V: AsRef<str>>(base: &str, pairs: &[(&str, V)]) -> String {
     let mut url = base.to_owned();
     for (index, (key, value)) in pairs.iter().enumerate() {
         url.push(if index == 0 { '?' } else { '&' });
         url.push_str(key);
         url.push('=');
-        url.push_str(&encode(value));
+        url.push_str(&encode(value.as_ref()));
     }
     url
 }
@@ -368,9 +368,9 @@ mod tests {
         let both = content(&[]);
         assert_eq!(mediums(&both, None), [Medium::Comic, Medium::Novel]);
         assert_eq!(mediums(&both, Some(MediaKind::Novel)), [Medium::Novel]);
-        assert!(mediums(&both, Some(MediaKind::Anime)).is_empty());
+        assert_eq!(mediums(&both, Some(MediaKind::Anime)), []);
         let comics = content(&[("include_novels", "false")]);
-        assert!(mediums(&comics, Some(MediaKind::Novel)).is_empty());
+        assert_eq!(mediums(&comics, Some(MediaKind::Novel)), []);
     }
 
     #[test]

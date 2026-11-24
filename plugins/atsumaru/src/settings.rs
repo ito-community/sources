@@ -4,6 +4,8 @@
 //! Legacy hosts retain the flat schema. Rich settings reuse keys with compatible values
 //! and apply visibility/defaults through `ControlValues`.
 
+use std::collections::{HashMap, HashSet};
+
 use ito_rs::models::{Setting, SettingIssue, SettingsSchema};
 
 pub const INCLUDE_COMICS: &str = "include_comics";
@@ -318,7 +320,16 @@ pub fn section(listing_id: &str) -> Option<&'static Section> {
 }
 
 pub fn schema() -> SettingsSchema {
-    let mut settings = vec![
+    let mut settings = content_settings();
+    settings.extend(blocked_tag_settings());
+    settings.extend(search_settings());
+    settings.extend(discover_settings());
+    settings.extend(chapter_settings());
+    SettingsSchema { settings }
+}
+
+fn content_settings() -> Vec<Setting> {
+    vec![
         toggle(
             INCLUDE_COMICS,
             "Content · Comics",
@@ -349,12 +360,15 @@ pub fn schema() -> SettingsSchema {
             "Show only titles the site marks adult. Requires the Pornographic maximum rating.",
             false,
         ),
-        text(
-            EXCLUDE_TAGS,
-            "Blocked tags · Any group",
-            "Comma-separated exact tag names or ids. Applies to search and Discover.",
-        ),
-    ];
+    ]
+}
+
+fn blocked_tag_settings() -> Vec<Setting> {
+    let mut settings = vec![text(
+        EXCLUDE_TAGS,
+        "Blocked tags · Any group",
+        "Comma-separated exact tag names or ids. Applies to search and Discover.",
+    )];
     settings.extend(TAG_GROUPS.iter().map(|(id, group)| {
         text(
             id,
@@ -362,7 +376,11 @@ pub fn schema() -> SettingsSchema {
             &format!("Comma-separated exact {group} tag names."),
         )
     }));
-    settings.extend([
+    settings
+}
+
+fn search_settings() -> Vec<Setting> {
+    vec![
         picker(
             SORT,
             "Search · Sort when browsing",
@@ -418,18 +436,24 @@ pub fn schema() -> SettingsSchema {
             "Search · Required tags",
             "Comma-separated exact tag names; titles must have all of them.",
         ),
-    ]);
-    for section in SECTIONS {
-        settings.push(toggle(
-            section.id,
-            &format!("Discover · {}", section.title),
-            match section.source {
-                SectionSource::GenreSpotlight => "Shown when a spotlight genre is set below.",
-                _ => "Show this section on the source's home page.",
-            },
-            section.enabled_by_default,
-        ));
-    }
+    ]
+}
+
+fn discover_settings() -> Vec<Setting> {
+    let mut settings: Vec<Setting> = SECTIONS
+        .iter()
+        .map(|section| {
+            toggle(
+                section.id,
+                &format!("Discover · {}", section.title),
+                match section.source {
+                    SectionSource::GenreSpotlight => "Shown when a spotlight genre is set below.",
+                    _ => "Show this section on the source's home page.",
+                },
+                section.enabled_by_default,
+            )
+        })
+        .collect();
     settings.extend([
         period_picker(POPULARITY_PERIOD, "Popular", Period::Daily),
         period_picker(BOOKMARK_PERIOD, "Most Bookmarked", Period::Monthly),
@@ -439,6 +463,12 @@ pub fn schema() -> SettingsSchema {
             "Discover · Spotlight genre",
             "Exact genre name for the Genre Spotlight section.",
         ),
+    ]);
+    settings
+}
+
+fn chapter_settings() -> Vec<Setting> {
+    vec![
         text(
             EXCLUDE_SCANLATORS,
             "Chapters · Hidden scanlators",
@@ -456,8 +486,7 @@ pub fn schema() -> SettingsSchema {
             "Chapters · Preferred scanlators",
             "Comma-separated, most preferred first. Used when showing one version per chapter.",
         ),
-    ]);
-    SettingsSchema { settings }
+    ]
 }
 
 fn toggle(id: &str, name: &str, summary: &str, default_value: bool) -> Setting {
@@ -568,53 +597,47 @@ impl Preferences {
     }
 
     pub fn parse(get: impl Fn(&str) -> Option<String>) -> Self {
-        let form = crate::controls::form();
         let rich = crate::controls::is_rich_host() || get(crate::controls::CONTENT_TYPES).is_some();
+        if !rich {
+            return Self::parse_effective(get);
+        }
+        let form = crate::controls::form();
         let values = ito_rs::controls::ControlValues::settings_with(&form, &get);
+        let controls_by_id: HashMap<&str, &ito_rs::controls::Control> = form
+            .sections
+            .iter()
+            .flat_map(|section| &section.controls)
+            .map(|control| (control.id.as_str(), control))
+            .collect();
         let effective = |key: &str| {
-            if rich
-                && form
-                    .sections
-                    .iter()
-                    .any(|section| section.controls.iter().any(|control| control.id == key))
-            {
-                let control = form
-                    .sections
-                    .iter()
-                    .flat_map(|section| &section.controls)
-                    .find(|control| control.id == key)?;
-                match &control.kind {
-                    ito_rs::controls::ControlKind::Toggle(_) => {
-                        values.toggle(key).ok().map(|value| value.to_string())
-                    }
-                    ito_rs::controls::ControlKind::Select(_) => {
-                        if key == crate::controls::SPOTLIGHT_GENRE_ID && get(key).is_none() {
-                            None
-                        } else {
-                            values
-                                .select(key)
-                                .ok()
-                                .map(|value| value.unwrap_or_default().to_owned())
-                        }
-                    }
-                    ito_rs::controls::ControlKind::Text(_) => {
-                        values.text(key).ok().map(str::to_owned)
-                    }
-                    _ => get(key),
+            let Some(control) = controls_by_id.get(key) else {
+                return get(key);
+            };
+            match &control.kind {
+                ito_rs::controls::ControlKind::Toggle(_) => {
+                    values.toggle(key).ok().map(|value| value.to_string())
                 }
-            } else {
-                get(key)
+                ito_rs::controls::ControlKind::Select(_) => {
+                    if key == crate::controls::SPOTLIGHT_GENRE_ID && get(key).is_none() {
+                        None
+                    } else {
+                        values
+                            .select(key)
+                            .ok()
+                            .map(|value| value.unwrap_or_default().to_owned())
+                    }
+                }
+                ito_rs::controls::ControlKind::Text(_) => values.text(key).ok().map(str::to_owned),
+                _ => get(key),
             }
         };
         let mut parsed = Self::parse_effective(effective);
-        if rich {
-            parsed.issues.extend(
-                values
-                    .issues()
-                    .iter()
-                    .map(|problem| issue(&problem.key, &problem.message)),
-            );
-        }
+        parsed.issues.extend(
+            values
+                .issues()
+                .iter()
+                .map(|problem| issue(&problem.key, &problem.message)),
+        );
         parsed
     }
 
@@ -810,16 +833,15 @@ impl<F: Fn(&str) -> Option<String>> Parser<F> {
         let Some(value) = self.raw(key) else {
             return default;
         };
-        match options
+        if let Some(option) = options
             .iter()
             .copied()
             .find(|option| name(*option) == value)
         {
-            Some(option) => option,
-            None => {
-                self.issue(key, "Choose one of the listed options.");
-                default
-            }
+            option
+        } else {
+            self.issue(key, "Choose one of the listed options.");
+            default
         }
     }
 
@@ -849,12 +871,13 @@ impl<F: Fn(&str) -> Option<String>> Parser<F> {
             default_value: Vec::new(),
             max_selected: Some(max),
         });
-        match kind.parse_value(&self.raw(key).unwrap_or_default()) {
-            Ok(ControlValue::MultiSelect(values)) => values,
-            _ => {
-                self.issue(key, "Choose valid catalog identifiers.");
-                Vec::new()
-            }
+        if let Ok(ControlValue::MultiSelect(values)) =
+            kind.parse_value(&self.raw(key).unwrap_or_default())
+        {
+            values
+        } else {
+            self.issue(key, "Choose valid catalog identifiers.");
+            Vec::new()
         }
     }
 
@@ -907,15 +930,8 @@ pub fn same_name(a: &str, b: &str) -> bool {
 }
 
 fn dedupe_case_insensitive(values: &mut Vec<String>) {
-    let mut seen = Vec::<String>::with_capacity(values.len());
-    values.retain(|value| {
-        let lower = value.to_lowercase();
-        let fresh = !seen.contains(&lower);
-        if fresh {
-            seen.push(lower);
-        }
-        fresh
-    });
+    let mut seen = HashSet::with_capacity(values.len());
+    values.retain(|value| seen.insert(value.to_lowercase()));
 }
 
 fn overlaps(left: &[String], right: &[String]) -> bool {
@@ -953,7 +969,7 @@ mod tests {
     #[test]
     fn absent_settings_use_conservative_defaults() {
         let preferences = parse(&[]);
-        assert!(preferences.issues().is_empty());
+        assert_eq!(preferences.issues(), []);
         assert_eq!(preferences.content.max_rating, Rating::Safe);
         assert!(!preferences.content.adult_only);
         assert_eq!(preferences.chapters.alternatives, Alternatives::ShowAll);
@@ -973,7 +989,7 @@ mod tests {
         let blocked = parse(&[(ADULT_ONLY, "true"), (MAX_RATING, "Erotica")]);
         assert_eq!(issue_keys(&blocked), [ADULT_ONLY]);
         let allowed = parse(&[(ADULT_ONLY, "true"), (MAX_RATING, "Pornographic")]);
-        assert!(allowed.issues().is_empty());
+        assert_eq!(allowed.issues(), []);
     }
 
     #[test]
