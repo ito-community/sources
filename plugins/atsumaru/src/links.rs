@@ -25,10 +25,12 @@ pub fn series_id(url: &str) -> Option<String> {
         return None;
     }
     let path = rest[end..].split(['?', '#']).next().unwrap_or_default();
-    let segments: Vec<&str> = path.split('/').filter(|part| !part.is_empty()).collect();
-    let id = match segments.as_slice() {
-        ["manga", id] | ["novel", id] | ["novel", id, _] | ["read", id] | ["read", id, _] => *id,
-        _ => return None,
+    let mut parts = path.split('/').filter(|part| !part.is_empty());
+    let ((Some("manga" | "novel" | "read"), Some(id), None, None)
+    | (Some("novel" | "read"), Some(id), Some(_), None)) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return None;
     };
     let valid = id
         .bytes()

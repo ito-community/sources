@@ -135,9 +135,8 @@ fn compare(
         .cmp(&preferred(b))
         .then_with(|| match preferences.alternatives {
             Alternatives::HighestVoted => score(b).total_cmp(&score(a)),
-            Alternatives::NewestUpload => Ordering::Equal,
+            Alternatives::NewestUpload | Alternatives::ShowAll => Ordering::Equal,
             Alternatives::MostPages => pages(b).cmp(&pages(a)),
-            Alternatives::ShowAll => Ordering::Equal,
         })
         .then_with(|| Reverse(uploaded(a)).cmp(&Reverse(uploaded(b))))
         .then_with(|| a.id.cmp(&b.id))

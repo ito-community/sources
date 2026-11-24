@@ -1,9 +1,12 @@
 //! Atsumaru (atsu.moe): comics and novels, with discovery and filtering driven by settings.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use ito_rs::catalog::{MAX_SCANLATOR_NAME_BYTES, MAX_TITLE_BYTES};
+use ito_rs::catalog::{
+    MAX_ABS_DATE, MAX_ABS_NUMBER, MAX_KEY_BYTES, MAX_SCANLATOR_NAME_BYTES, MAX_TITLE_BYTES,
+};
 use ito_rs::models::manga::{self, ContentRating, Manga, Viewer};
 use ito_rs::models::novel::{self, Novel};
 use ito_rs::models::{
@@ -23,7 +26,11 @@ mod models;
 mod query;
 mod settings;
 
-use models::*;
+use models::{
+    ChapterItem, ChapterListResponse, Creator, FeedItem, FeedResponse, NovelChapterResponse,
+    ReadChapterResponse, Scanlator, SearchDocument, SearchResponse, Series, SeriesResponse,
+    Taxonomy, Term,
+};
 use query::{Medium, PAGE_SIZE, SearchIds};
 use settings::{ContentPreferences, Preferences, Rating, Section, SectionSource, Sort};
 
@@ -140,7 +147,7 @@ fn novel_status(status: Option<&str>) -> novel::Status {
     }
 }
 
-fn novel_rating(rating: ContentRating) -> novel::ContentRating {
+fn novel_rating(rating: &ContentRating) -> novel::ContentRating {
     match rating {
         ContentRating::Safe => novel::ContentRating::Safe,
         ContentRating::Suggestive => novel::ContentRating::Suggestive,
@@ -211,7 +218,7 @@ impl Listed {
                 url,
                 status: novel_status(self.status.as_deref()),
                 nsfw: nsfw(&self.rating),
-                content_rating: novel_rating(self.rating),
+                content_rating: novel_rating(&self.rating),
                 chapters: None,
                 catalog: None,
             })
@@ -246,11 +253,11 @@ fn display_title(title: String, english: Option<String>, id: &str) -> String {
 }
 
 fn search_page(url: &str, page: i32, ceiling: Rating) -> Result<MediaPageResult> {
-    search_result(get_request(url).send()?, page, ceiling)
+    search_result(&get_request(url).send()?, page, ceiling)
 }
 
 /// Reads a search response into one page of entries.
-fn search_result(response: NetResponse, page: i32, ceiling: Rating) -> Result<MediaPageResult> {
+fn search_result(response: &NetResponse, page: i32, ceiling: Rating) -> Result<MediaPageResult> {
     let response: SearchResponse = decode(response.status, &response.body)?;
     let shown = usize::try_from(page.max(1))
         .unwrap_or(1)
@@ -270,11 +277,11 @@ fn lookup(ids: &[&str]) -> Result<Vec<SearchDocument>> {
     if ids.is_empty() {
         return Ok(Vec::new());
     }
-    lookup_documents(get_request(&query::lookup_url(ids)).send()?)
+    lookup_documents(&get_request(&query::lookup_url(ids)).send()?)
 }
 
 /// Reads a catalog lookup response into its documents.
-fn lookup_documents(response: NetResponse) -> Result<Vec<SearchDocument>> {
+fn lookup_documents(response: &NetResponse) -> Result<Vec<SearchDocument>> {
     let response: SearchResponse = decode(response.status, &response.body)?;
     Ok(response.hits.into_iter().map(|hit| hit.document).collect())
 }
@@ -361,22 +368,15 @@ fn section_mediums(section: &Section, preferences: &Preferences) -> Vec<Medium> 
 }
 
 /// The spotlight genre's id and display name.
-fn spotlight(preferences: &Preferences) -> Result<Option<Term>> {
+fn spotlight<'a>(preferences: &Preferences, taxonomy: &'a Taxonomy) -> Result<Option<&'a Term>> {
     let Some(name) = preferences.spotlight_genre.as_deref() else {
         return Ok(None);
     };
-    let taxonomy = taxonomy()?;
     taxonomy
         .genres
         .iter()
         .find(|genre| genre.id == name || settings::same_name(&genre.name, name))
-        .map(|genre| {
-            Some(Term {
-                id: genre.id.clone(),
-                name: genre.name.clone(),
-                group: genre.group.clone(),
-            })
-        })
+        .map(Some)
         .ok_or_else(unknown_filter_name)
 }
 
@@ -393,12 +393,31 @@ fn page_plan(
     preferences: &Preferences,
     page: i32,
 ) -> Result<Option<PagePlan>> {
+    let blocked = blocked_tag_ids(preferences)?;
+    let taxonomy = if matches!(section.source, SectionSource::GenreSpotlight) {
+        Some(taxonomy()?)
+    } else {
+        None
+    };
+    let spotlight_genre = match taxonomy.as_deref() {
+        Some(taxonomy) => spotlight(preferences, taxonomy)?,
+        None => None,
+    };
+    page_plan_with(section, preferences, page, &blocked, spotlight_genre)
+}
+
+fn page_plan_with(
+    section: &'static Section,
+    preferences: &Preferences,
+    page: i32,
+    blocked: &[String],
+    spotlight_genre: Option<&Term>,
+) -> Result<Option<PagePlan>> {
     let mediums = section_mediums(section, preferences);
     if mediums.is_empty() {
         return Ok(None);
     }
     let content = &preferences.content;
-    let blocked = blocked_tag_ids(preferences)?;
     let url = match section.source {
         SectionSource::Feed { endpoint, .. } => {
             let offset = usize::try_from(page.max(1) - 1).unwrap_or(0) * PAGE_SIZE;
@@ -407,19 +426,19 @@ fn page_plan(
                 offset,
                 &mediums,
                 content,
-                &blocked,
+                blocked,
                 preferences.period(section),
             )
         }
         SectionSource::Trending => {
-            let filters = query::catalog_filters(content, &mediums, &blocked);
+            let filters = query::catalog_filters(content, &mediums, blocked);
             query::search_url("", page, filters, Sort::Trending)
         }
         SectionSource::GenreSpotlight => {
-            let genre = spotlight(preferences)?.ok_or_else(|| {
+            let genre = spotlight_genre.ok_or_else(|| {
                 Error::NeedsSetup("Set a spotlight genre in Atsumaru's settings.".into())
             })?;
-            let mut filters = query::catalog_filters(content, &mediums, &blocked);
+            let mut filters = query::catalog_filters(content, &mediums, blocked);
             filters.push(query::genre_filter(&genre.id));
             query::search_url("", page, filters, Sort::Popularity)
         }
@@ -456,7 +475,7 @@ fn first_page(
             })
         }
         SectionSource::Trending | SectionSource::GenreSpotlight => {
-            Ok(FirstPage::Ready(search_result(response, page, ceiling)?))
+            Ok(FirstPage::Ready(search_result(&response, page, ceiling)?))
         }
     }
 }
@@ -507,7 +526,7 @@ fn load_pages(preferences: &Preferences, plans: Vec<PagePlan>) -> Vec<Result<Med
                         let response = lookup_responses
                             .next()
                             .expect("send_all returns one result per lookup");
-                        lookup_documents(response?)?
+                        lookup_documents(&response?)?
                     };
                     Ok(MediaPageResult {
                         has_next_page,
@@ -526,10 +545,14 @@ fn rate_feed(
     documents: &[SearchDocument],
     content: &ContentPreferences,
 ) -> Vec<MediaEntry> {
+    let by_id: HashMap<&str, &SearchDocument> = documents
+        .iter()
+        .map(|document| (document.id.as_str(), document))
+        .collect();
     items
         .into_iter()
         .filter_map(|item| {
-            let rated = documents.iter().find(|document| document.id == item.id);
+            let rated = by_id.get(item.id.as_str()).copied();
             let site_rating = rated.and_then(|document| document.mb_content_rating.as_deref());
             let adult = item.is_adult.unwrap_or(false)
                 || rated.and_then(|document| document.is_adult) == Some(true);
@@ -569,6 +592,8 @@ fn feed_allows(rating: Option<Rating>, adult: bool, content: &ContentPreferences
 /// round trips however many sections are enabled.
 fn home() -> Result<HomeLayout> {
     let preferences = preferences()?;
+    let mut blocked: Option<Vec<String>> = None;
+    let mut cached_taxonomy: Option<Rc<Taxonomy>> = None;
     let mut shown = Vec::new();
     let mut plans = Vec::new();
     // Planning stops at the first failure. That error is reported after the sections planned before
@@ -582,18 +607,47 @@ fn home() -> Result<HomeLayout> {
         if mediums.is_empty() {
             continue;
         }
-        let title = match section.source {
-            SectionSource::GenreSpotlight => match spotlight(&preferences) {
-                Ok(Some(genre)) => format!("Spotlight: {}", genre.name),
-                Ok(None) => continue,
+        let spotlight_genre = match section.source {
+            SectionSource::GenreSpotlight => {
+                if preferences.spotlight_genre.is_none() {
+                    continue;
+                }
+                let taxonomy = match &cached_taxonomy {
+                    Some(taxonomy) => taxonomy,
+                    None => match taxonomy() {
+                        Ok(taxonomy) => cached_taxonomy.insert(taxonomy),
+                        Err(error) => {
+                            planning_error = Some(error);
+                            break;
+                        }
+                    },
+                };
+                match spotlight(&preferences, taxonomy) {
+                    Ok(Some(genre)) => Some(genre),
+                    Ok(None) => continue,
+                    Err(error) => {
+                        planning_error = Some(error);
+                        break;
+                    }
+                }
+            }
+            _ => None,
+        };
+        let title = match spotlight_genre {
+            Some(genre) => format!("Spotlight: {}", genre.name),
+            None => section.title.to_owned(),
+        };
+        let blocked = match &blocked {
+            Some(ids) => ids.as_slice(),
+            None => match blocked_tag_ids(&preferences) {
+                Ok(ids) => blocked.insert(ids).as_slice(),
                 Err(error) => {
-                    planning_error = Some(error);
+                    planning_error = Some(in_section(error, &title));
                     break;
                 }
             },
-            _ => section.title.to_owned(),
         };
-        match page_plan(section, &preferences, 1) {
+        match page_plan_with(section, &preferences, 1, blocked, spotlight_genre) {
             Ok(Some(plan)) => {
                 shown.push((section, title, mediums));
                 plans.push(plan);
@@ -610,43 +664,52 @@ fn home() -> Result<HomeLayout> {
     let mut components = Vec::new();
     for ((section, title, mediums), page) in shown.into_iter().zip(pages) {
         let entries = page.map_err(|error| in_section(error, &title))?.entries;
-        let listing = Some(Listing {
-            id: section.id.into(),
-            name: title.clone(),
-            kind: 0,
-        });
-        let value = match mediums.as_slice() {
-            [Medium::Comic] => HomeComponentValue::Scroller(
-                entries
-                    .into_iter()
-                    .filter_map(|entry| match entry {
-                        MediaEntry::Manga(manga) => Some(manga),
-                        _ => None,
-                    })
-                    .collect(),
-                listing,
-            ),
-            [Medium::Novel] => HomeComponentValue::NovelScroller(
-                entries
-                    .into_iter()
-                    .filter_map(|entry| match entry {
-                        MediaEntry::Novel(novel) => Some(novel),
-                        _ => None,
-                    })
-                    .collect(),
-                listing,
-            ),
-            _ => HomeComponentValue::MediaScroller(entries, listing),
-        };
-        components.push(HomeComponent {
-            title: Some(title),
-            subtitle: None,
-            value,
-        });
+        components.push(home_component(section, title, &mediums, entries));
     }
     match planning_error {
         Some(error) => Err(error),
         None => Ok(HomeLayout { components }),
+    }
+}
+
+fn home_component(
+    section: &'static Section,
+    title: String,
+    mediums: &[Medium],
+    entries: Vec<MediaEntry>,
+) -> HomeComponent {
+    let listing = Some(Listing {
+        id: section.id.into(),
+        name: title.clone(),
+        kind: 0,
+    });
+    let value = match mediums {
+        [Medium::Comic] => HomeComponentValue::Scroller(
+            entries
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    MediaEntry::Manga(manga) => Some(manga),
+                    _ => None,
+                })
+                .collect(),
+            listing,
+        ),
+        [Medium::Novel] => HomeComponentValue::NovelScroller(
+            entries
+                .into_iter()
+                .filter_map(|entry| match entry {
+                    MediaEntry::Novel(novel) => Some(novel),
+                    _ => None,
+                })
+                .collect(),
+            listing,
+        ),
+        _ => HomeComponentValue::MediaScroller(entries, listing),
+    };
+    HomeComponent {
+        title: Some(title),
+        subtitle: None,
+        value,
     }
 }
 
@@ -685,6 +748,7 @@ fn update(mut entry: MediaEntry, details: bool, units: bool) -> Result<MediaEntr
         ))?;
         let chapters = chapters::select(list.chapters, &series.scanlators, &preferences.chapters)
             .into_iter()
+            .filter(|item| (1..=MAX_KEY_BYTES).contains(&item.id.len()))
             .map(|item| chapter(item, &key, &series.scanlators, novel))
             .collect::<Vec<_>>();
         Some((chapters, chapters::catalog(&preferences.chapters)))
@@ -698,7 +762,7 @@ fn update(mut entry: MediaEntry, details: bool, units: bool) -> Result<MediaEntr
             .find(|document| document.id == key);
         Some(Details::new(
             series,
-            catalog,
+            catalog.as_ref(),
             preferences.content.max_rating,
         ))
     } else {
@@ -729,7 +793,7 @@ fn update(mut entry: MediaEntry, details: bool, units: bool) -> Result<MediaEntr
             if let Some(details) = details {
                 novel.status = novel_status(details.status.as_deref());
                 novel.nsfw = nsfw(&details.rating);
-                novel.content_rating = novel_rating(details.rating);
+                novel.content_rating = novel_rating(&details.rating);
                 novel.title = details.title;
                 novel.description = details.description;
                 novel.cover = details.cover;
@@ -762,13 +826,11 @@ struct Details {
 }
 
 impl Details {
-    fn new(series: Series, catalog: Option<SearchDocument>, ceiling: Rating) -> Self {
+    fn new(series: Series, catalog: Option<&SearchDocument>, ceiling: Rating) -> Self {
         let adult = series.is_adult.unwrap_or(false)
-            || catalog.as_ref().and_then(|document| document.is_adult) == Some(true);
+            || catalog.and_then(|document| document.is_adult) == Some(true);
         let rating = content_rating(
-            catalog
-                .as_ref()
-                .and_then(|document| document.mb_content_rating.as_deref()),
+            catalog.and_then(|document| document.mb_content_rating.as_deref()),
             adult,
             ceiling,
         );
@@ -816,43 +878,54 @@ fn chapter(item: ChapterItem, series: &str, groups: &[Scanlator], novel: bool) -
     } else {
         ContentKind::Images
     };
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "millisecond timestamps fit in f64 with sub-second precision"
+    )]
+    let date_updated = item
+        .created_at
+        .map(|millis| millis as f64 / 1000.0)
+        .filter(|secs| secs.is_finite() && secs.abs() <= MAX_ABS_DATE);
     Chapter {
         url: Some(links::chapter_url(series, &item.id, novel)),
         title: item
             .title
             .filter(|title| !title.trim().is_empty() && title.len() <= MAX_TITLE_BYTES),
-        chapter: item.number,
-        date_updated: item.created_at.map(|millis| millis as f64 / 1000.0),
+        chapter: item
+            .number
+            .filter(|number| number.is_finite() && number.abs() <= MAX_ABS_NUMBER),
+        date_updated,
         scanlator,
         lang: Some("en".into()),
         ..Chapter::new(item.id, kind)
     }
 }
 
+fn page_entries(read: ReadChapterResponse) -> Result<Vec<Page>> {
+    // The site reader renders `readChapter.pages` in API array order and never sorts by `number`.
+    read.read_chapter
+        .pages
+        .into_iter()
+        .enumerate()
+        .map(|(index, page)| {
+            let url = links::image_url(&page.image).ok_or_else(|| {
+                Error::Host("Atsumaru returned an unexpected image location".into())
+            })?;
+            Ok(page_at(index, PageContent::Url(url)))
+        })
+        .collect()
+}
+
 fn pages(entry: &MediaEntry, chapter: &Chapter) -> Result<Vec<Page>> {
-    let pairs = [
-        ("mangaId", entry.key().to_owned()),
-        ("chapterId", chapter.key.clone()),
-    ];
+    let pairs = [("mangaId", entry.key()), ("chapterId", &chapter.key)];
     let text = matches!(entry, MediaEntry::Novel(_)) || chapter.kind == ContentKind::Text;
     if !text {
         let read: ReadChapterResponse =
             get_json(&query::with_query(&format!("{API}/read/chapter"), &pairs))?;
-        let mut images = read.read_chapter.pages;
         // Chapters of novels saved before novels were supported say images; the site answers
         // those with no pages, so they are read as text.
-        if !images.is_empty() {
-            images.sort_by_key(|page| page.number);
-            return images
-                .into_iter()
-                .enumerate()
-                .map(|(index, page)| {
-                    let url = links::image_url(&page.image).ok_or_else(|| {
-                        Error::Host("Atsumaru returned an unexpected image location".into())
-                    })?;
-                    Ok(page_at(index, PageContent::Url(url)))
-                })
-                .collect();
+        if !read.read_chapter.pages.is_empty() {
+            return page_entries(read);
         }
     }
     let read: NovelChapterResponse = get_json(&query::with_query(
@@ -1360,5 +1433,50 @@ mod tests {
             "id"
         );
         assert_eq!(display_title("Title".into(), None, "id"), "Title");
+    }
+
+    #[test]
+    fn pages_preserve_api_array_order_and_allow_missing_or_unsorted_numbers() {
+        let payload = br#"{"readChapter":{"pages":[
+            {"image":"/static/pages/c/first.webp","number":2},
+            {"image":"/static/pages/c/second.webp","number":0},
+            {"image":"/static/pages/c/third.webp"},
+            {"image":"/static/pages/c/fourth.webp","number":null}
+        ]}}"#;
+        let read = decode::<ReadChapterResponse>(200, payload).expect("valid page list");
+        let pages = page_entries(read).expect("valid pages");
+        assert_eq!(pages.len(), 4);
+        let urls: Vec<(i32, &str)> = pages
+            .iter()
+            .map(|page| match &page.content {
+                PageContent::Url(url) => (page.index, url.as_str()),
+                _ => panic!("expected image URL"),
+            })
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                (0, "https://cdn.atsu.moe/static/pages/c/first.webp"),
+                (1, "https://cdn.atsu.moe/static/pages/c/second.webp"),
+                (2, "https://cdn.atsu.moe/static/pages/c/third.webp"),
+                (3, "https://cdn.atsu.moe/static/pages/c/fourth.webp"),
+            ]
+        );
+    }
+
+    #[test]
+    fn chapter_drops_out_of_range_numbers_and_dates() {
+        let item = ChapterItem {
+            id: "c1".into(),
+            scanlation_manga_id: None,
+            number: Some(1e12),
+            title: None,
+            created_at: Some(200_000_000_000_000),
+            page_count: None,
+        };
+        let converted = chapter(item, "s", &[], false);
+        assert_eq!(converted.chapter, None);
+        assert_eq!(converted.date_updated, None);
+        ito_rs::catalog::validate_chapters(&[converted]).expect("bounded chapter is valid");
     }
 }

@@ -133,7 +133,6 @@ pub struct ReadChapter {
 #[derive(Debug, Deserialize)]
 pub struct ChapterPage {
     pub image: String,
-    pub number: i64,
 }
 
 #[derive(Debug, Deserialize)]

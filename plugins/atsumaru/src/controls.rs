@@ -13,6 +13,7 @@ use ito_rs::controls::{
 use ito_rs::models::{FilterItem, MediaKind, Setting};
 use ito_rs::{Error, Result};
 use std::cell::Cell;
+use std::collections::HashSet;
 
 thread_local! {
     // Negotiation is scoped to this plugin instance, never persisted into old-host settings.
@@ -40,50 +41,57 @@ fn inline(pairs: &[(&str, &str)]) -> OptionSource {
     )
 }
 
+fn legacy_control(setting: Setting) -> Option<Control> {
+    let mut control = match setting {
+        Setting::Toggle {
+            id,
+            name,
+            summary,
+            default_value,
+        } => Control::toggle(id, name, default_value).summary(summary.unwrap_or_default()),
+        Setting::Text {
+            id,
+            name,
+            summary,
+            default_value,
+        } => Control::text(id, name, default_value).summary(summary.unwrap_or_default()),
+        Setting::Picker {
+            id,
+            name,
+            summary,
+            options,
+            default_value,
+        } => Control::select(
+            id,
+            name,
+            OptionSource::Inline(
+                options
+                    .into_iter()
+                    .map(|value| ChoiceOption::new(value.clone(), value))
+                    .collect(),
+            ),
+            Some(default_value),
+        )
+        .summary(summary.unwrap_or_default()),
+        _ => return None,
+    };
+    if let Some(pos) = control.title.find(" · ") {
+        control.title.drain(..pos + " · ".len());
+    }
+    Some(control)
+}
+
 pub fn form() -> SettingsForm {
     let mut content = ControlSection::new("content", "Content");
     let mut discover = ControlSection::new("discover", "Discover");
     discover.flags = ControlSection::PAGE;
     let mut chapters = ControlSection::new("chapters", "Chapters");
     // Reuse the legacy declarations so reused keys retain exactly the same defaults.
-    for setting in settings::schema().settings {
-        let control = match setting {
-            Setting::Toggle {
-                id,
-                name,
-                summary,
-                default_value,
-            } => Control::toggle(id, name, default_value).summary(summary.unwrap_or_default()),
-            Setting::Text {
-                id,
-                name,
-                summary,
-                default_value,
-            } => Control::text(id, name, default_value).summary(summary.unwrap_or_default()),
-            Setting::Picker {
-                id,
-                name,
-                summary,
-                options,
-                default_value,
-            } => Control::select(
-                id,
-                name,
-                OptionSource::Inline(
-                    options
-                        .into_iter()
-                        .map(|value| ChoiceOption::new(value.clone(), value))
-                        .collect(),
-                ),
-                Some(default_value),
-            )
-            .summary(summary.unwrap_or_default()),
-            _ => continue,
-        };
-        let mut control = control;
-        if let Some((_, title)) = control.title.split_once(" · ") {
-            control.title = title.to_owned();
-        }
+    for control in settings::schema()
+        .settings
+        .into_iter()
+        .filter_map(legacy_control)
+    {
         match control.id.as_str() {
             settings::TYPES => {
                 content.controls.push(
@@ -103,7 +111,7 @@ pub fn form() -> SettingsForm {
                 );
             }
             settings::INCLUDE_COMICS | settings::INCLUDE_NOVELS | settings::MAX_RATING => {
-                content.controls.push(control)
+                content.controls.push(control);
             }
             settings::ADULT_ONLY => content
                 .controls
@@ -288,10 +296,10 @@ pub fn search_preferences(
                 Some("canceled") => Some("Canceled"),
                 _ => None,
             },
-            year_from: year_from.map(|value| value as u16),
-            year_to: year_to.map(|value| value as u16),
-            min_chapters: min_chapters.map(|value| value as u32),
-            max_chapters: max_chapters.map(|value| value as u32),
+            year_from: year_from.and_then(|value| u16::try_from(value).ok()),
+            year_to: year_to.and_then(|value| u16::try_from(value).ok()),
+            min_chapters: min_chapters.and_then(|value| u32::try_from(value).ok()),
+            max_chapters: max_chapters.and_then(|value| u32::try_from(value).ok()),
             official_only: values.toggle("official_only")?,
             include_genres: values.multi_select("genres_all")?.to_vec(),
             exclude_genres: values.multi_select("genres_none")?.to_vec(),
@@ -325,40 +333,51 @@ pub fn option_page(taxonomy: &Taxonomy, request: OptionRequest) -> Result<Option
         "genres" => &taxonomy.genres,
         _ => return Err(Error::Unsupported),
     };
-    let mut options: Vec<ChoiceOption> = terms
+    let mut indexed: Vec<(&crate::models::Term, String, String)> = terms
         .iter()
-        .map(|term| ChoiceOption {
-            value: term.id.clone(),
-            label: term.name.clone(),
-            group: term.group.clone(),
+        .map(|term| {
+            (
+                term,
+                term.group.as_deref().unwrap_or("").to_lowercase(),
+                term.name.to_lowercase(),
+            )
         })
         .collect();
-    options.sort_by_cached_key(|option| {
-        (
-            option.group.as_deref().unwrap_or("").to_lowercase(),
-            option.label.to_lowercase(),
-            option.value.clone(),
-        )
+    indexed.sort_by(|(a_term, a_group, a_name), (b_term, b_group, b_name)| {
+        a_group
+            .cmp(b_group)
+            .then_with(|| a_name.cmp(b_name))
+            .then_with(|| a_term.id.cmp(&b_term.id))
     });
     // Explicit byte hashing is deterministic across platforms and Rust versions.
-    let mut hash = 0xcbf29ce484222325_u64;
-    for option in &options {
+    let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+    for (term, _, _) in &indexed {
         for value in [
-            option.value.as_str(),
-            option.label.as_str(),
-            option.group.as_deref().unwrap_or(""),
+            term.id.as_str(),
+            term.name.as_str(),
+            term.group.as_deref().unwrap_or(""),
         ] {
             for byte in value.bytes().chain(std::iter::once(0)) {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3);
             }
         }
     }
-    let revision = Some(format!("{:016x}", hash));
+    let revision = Some(format!("{hash:016x}"));
+    let to_option = |term: &crate::models::Term| ChoiceOption {
+        value: term.id.clone(),
+        label: term.name.clone(),
+        group: term.group.clone(),
+    };
     match request.query {
         OptionQuery::Values(values) => {
-            options.retain(|option| values.contains(&option.value));
+            let wanted: HashSet<&str> = values.iter().map(String::as_str).collect();
+            let options: Vec<ChoiceOption> = indexed
+                .into_iter()
+                .filter(|(term, _, _)| wanted.contains(term.id.as_str()))
+                .map(|(term, _, _)| to_option(term))
+                .collect();
             Ok(OptionPage {
-                total: Some(options.len() as u32),
+                total: Some(u32::try_from(options.len()).unwrap_or(u32::MAX)),
                 options,
                 next_offset: None,
                 revision,
@@ -366,15 +385,20 @@ pub fn option_page(taxonomy: &Taxonomy, request: OptionRequest) -> Result<Option
         }
         OptionQuery::Search { text, offset } => {
             let text = text.trim().to_lowercase();
-            options.retain(|option| option.label.to_lowercase().contains(&text));
-            let total = options.len() as u32;
+            let matches: Vec<&crate::models::Term> = indexed
+                .into_iter()
+                .filter(|(_, _, name_lower)| text.is_empty() || name_lower.contains(&text))
+                .map(|(term, _, _)| term)
+                .collect();
+            let total = u32::try_from(matches.len()).unwrap_or(u32::MAX);
             let limit = request.limit.clamp(1, 100);
-            let options: Vec<_> = options
+            let options: Vec<ChoiceOption> = matches
                 .into_iter()
                 .skip(offset as usize)
                 .take(limit as usize)
+                .map(to_option)
                 .collect();
-            let end = offset.saturating_add(options.len() as u32);
+            let end = offset.saturating_add(u32::try_from(options.len()).unwrap_or(u32::MAX));
             Ok(OptionPage {
                 options,
                 next_offset: (end < total).then_some(end),
@@ -407,7 +431,7 @@ mod tests {
             &taxonomy,
             request(
                 OptionQuery::Search {
-                    text: "".into(),
+                    text: String::new(),
                     offset: 0,
                 },
                 1,
@@ -421,7 +445,7 @@ mod tests {
             &taxonomy,
             request(
                 OptionQuery::Search {
-                    text: "".into(),
+                    text: String::new(),
                     offset: 1,
                 },
                 1000,
@@ -455,14 +479,14 @@ mod tests {
             &taxonomy,
             request(
                 OptionQuery::Search {
-                    text: "".into(),
+                    text: String::new(),
                     offset: 999,
                 },
                 100,
             ),
         )
         .unwrap();
-        assert!(beyond.options.is_empty());
+        assert_eq!(beyond.options, []);
         assert_eq!(beyond.next_offset, None);
     }
     #[test]
@@ -471,7 +495,7 @@ mod tests {
         let query = || {
             request(
                 OptionQuery::Search {
-                    text: "".into(),
+                    text: String::new(),
                     offset: 0,
                 },
                 100,
@@ -554,7 +578,7 @@ mod tests {
         }];
         let rich = search_preferences(get, &dense, None).unwrap();
         assert_eq!(rich.search.sort, Sort::Popularity);
-        assert!(rich.search.include_genres.is_empty());
+        assert_eq!(rich.search.include_genres, [] as [String; 0]);
         assert!(rich.search.official_only);
         let legacy = search_preferences(
             |key| (key == settings::SORT).then(|| "Trending".into()),
@@ -579,7 +603,8 @@ mod tests {
             },
         ];
         let preferences = search_preferences(|_| None, &filters, None).unwrap();
-        let query = crate::query::search_filters(&preferences.search, &Default::default());
+        let query =
+            crate::query::search_filters(&preferences.search, &crate::query::SearchIds::default());
         assert!(query.contains(&"releaseYear:>=2000".into()));
         assert!(query.contains(&"chapterCount:<=100".into()));
     }
@@ -603,7 +628,7 @@ mod migration_tests {
                 .find(|(id, _)| *id == key)
                 .map(|(_, value)| (*value).to_owned())
         };
-        assert!(Preferences::parse_general(get).issues().is_empty());
+        assert_eq!(Preferences::parse_general(get).issues(), []);
         assert!(matches!(
             search_preferences(get, &[], None),
             Err(Error::NeedsSetup(_))
@@ -629,10 +654,10 @@ mod migration_tests {
         assert!(search_preferences(get, &[], None).is_err());
         negotiate_rich_host();
         let general = Preferences::parse_general(get);
-        assert!(general.issues().is_empty());
+        assert_eq!(general.issues(), []);
         assert!(!general.content.adult_only);
         let search = search_preferences(get, &[], None).unwrap();
-        assert!(search.issues().is_empty());
+        assert_eq!(search.issues(), []);
         assert_eq!(search.search.sort, Sort::Popularity);
         assert_eq!(search.search.year_from, None);
         assert_eq!(get(CONTENT_TYPES), None);
@@ -647,7 +672,7 @@ mod migration_tests {
             ("home_novels", "true"),
             (settings::POPULARITY_PERIOD, "Weekly"),
         ]);
-        assert!(parsed.issues().is_empty());
+        assert_eq!(parsed.issues(), []);
         let novels = settings::section("home_novels").unwrap();
         assert!(parsed.section_enabled(novels));
         assert_eq!(parsed.period(novels), Some(settings::Period::Weekly));
@@ -680,10 +705,10 @@ mod migration_tests {
             (SPOTLIGHT_GENRE_ID, ""),
         ]);
         let cleared = preferences(&edited);
-        assert!(cleared.content.types.is_empty());
-        assert!(cleared.content.excluded_tags.is_empty());
+        assert_eq!(cleared.content.types, [] as [&str; 0]);
+        assert_eq!(cleared.content.excluded_tags, [] as [String; 0]);
         assert_eq!(cleared.spotlight_genre, None);
-        assert!(cleared.issues().is_empty());
+        assert_eq!(cleared.issues(), []);
     }
 
     #[test]
@@ -696,7 +721,7 @@ mod migration_tests {
         ]);
         assert_eq!(parsed.content.excluded_tags, vec!["Blue"]);
         assert_eq!(parsed.spotlight_genre.as_deref(), Some("Action"));
-        assert!(parsed.issues().is_empty());
+        assert_eq!(parsed.issues(), []);
     }
 
     #[test]
@@ -710,7 +735,7 @@ mod migration_tests {
         );
         let hidden = preferences(&[(CONTENT_TYPES, "[]"), (settings::ADULT_ONLY, "true")]);
         assert!(!hidden.content.adult_only);
-        assert!(hidden.issues().is_empty());
+        assert_eq!(hidden.issues(), []);
         let visible = preferences(&[
             (CONTENT_TYPES, "[]"),
             (settings::MAX_RATING, "Pornographic"),
@@ -741,7 +766,7 @@ mod migration_tests {
         ]);
         assert_eq!(selected.content.types, vec!["Manwha"]);
         assert_eq!(selected.content.excluded_tags, vec!["t2"]);
-        assert!(selected.issues().is_empty());
+        assert_eq!(selected.issues(), []);
     }
 
     #[test]
@@ -761,7 +786,7 @@ mod migration_tests {
             OptionRequest {
                 catalog: "tags".into(),
                 query: OptionQuery::Search {
-                    text: "".into(),
+                    text: String::new(),
                     offset: 0,
                 },
                 limit: 1000,
