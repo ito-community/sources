@@ -902,16 +902,47 @@ fn chapter(item: ChapterItem, series: &str, groups: &[Scanlator], novel: bool) -
 }
 
 fn page_entries(read: ReadChapterResponse) -> Result<Vec<Page>> {
-    // The site reader renders `readChapter.pages` in API array order and never sorts by `number`.
-    read.read_chapter
+    let mut images: Vec<String> = read
+        .read_chapter
         .pages
         .into_iter()
+        .map(|page| page.image)
+        .collect();
+    // Chapters uploaded as numbered files (`0.webp`, `1.webp`, …) come back scrambled: the API's
+    // array order and `number` follow neither the files nor the strip, and only the file numbers do.
+    // Those chapters are read in file-number order; any other naming keeps the API's order.
+    if let Some(numbers) = file_numbers(&images) {
+        let mut numbered: Vec<(u64, String)> = numbers.into_iter().zip(images).collect();
+        numbered.sort_by_key(|(number, _)| *number);
+        images = numbered.into_iter().map(|(_, image)| image).collect();
+    }
+    images
+        .into_iter()
         .enumerate()
-        .map(|(index, page)| {
-            let url = links::image_url(&page.image).ok_or_else(|| {
+        .map(|(index, image)| {
+            let url = links::image_url(&image).ok_or_else(|| {
                 Error::Host("Atsumaru returned an unexpected image location".into())
             })?;
             Ok(page_at(index, PageContent::Url(url)))
+        })
+        .collect()
+}
+
+/// The number each image file is named with (`12.webp` is 12), when every page's file is named
+/// with a distinct whole number. `None` for any other naming, such as content hashes.
+fn file_numbers(images: &[String]) -> Option<Vec<u64>> {
+    let mut seen = std::collections::HashSet::with_capacity(images.len());
+    images
+        .iter()
+        .map(|image| {
+            let name = image.rsplit('/').next()?.split(['?', '#']).next()?;
+            let stem = name.split_once('.').map_or(name, |(stem, _)| stem);
+            if stem.is_empty() || stem.len() > 9 || !stem.bytes().all(|byte| byte.is_ascii_digit())
+            {
+                return None;
+            }
+            let number: u64 = stem.parse().ok()?;
+            seen.insert(number).then_some(number)
         })
         .collect()
 }
@@ -1436,7 +1467,7 @@ mod tests {
     }
 
     #[test]
-    fn pages_preserve_api_array_order_and_allow_missing_or_unsorted_numbers() {
+    fn pages_keep_api_array_order_for_unnumbered_files() {
         let payload = br#"{"readChapter":{"pages":[
             {"image":"/static/pages/c/first.webp","number":2},
             {"image":"/static/pages/c/second.webp","number":0},
@@ -1462,6 +1493,57 @@ mod tests {
                 (3, "https://cdn.atsu.moe/static/pages/c/fourth.webp"),
             ]
         );
+    }
+
+    /// Numbered files come back scrambled (seen on "Return of the Namgung Clan's Granddaughter"
+    /// chapter 32: `103.webp`, `68.webp`, `97.webp`, …); they are read in file-number order.
+    #[test]
+    fn numbered_files_are_read_in_file_number_order() {
+        let payload = br#"{"readChapter":{"pages":[
+            {"image":"/static/pages/s/c/10.webp","number":0},
+            {"image":"/static/pages/s/c/2.webp","number":1},
+            {"image":"/static/pages/s/c/0.webp","number":2},
+            {"image":"/static/pages/s/c/1.webp","number":3}
+        ]}}"#;
+        let read = decode::<ReadChapterResponse>(200, payload).expect("valid page list");
+        let urls: Vec<String> = page_entries(read)
+            .expect("valid pages")
+            .into_iter()
+            .map(|page| match page.content {
+                PageContent::Url(url) => url,
+                _ => panic!("expected image URL"),
+            })
+            .collect();
+        assert_eq!(
+            urls,
+            [
+                "https://cdn.atsu.moe/static/pages/s/c/0.webp",
+                "https://cdn.atsu.moe/static/pages/s/c/1.webp",
+                "https://cdn.atsu.moe/static/pages/s/c/2.webp",
+                "https://cdn.atsu.moe/static/pages/s/c/10.webp",
+            ]
+        );
+    }
+
+    #[test]
+    fn file_numbers_need_every_page_distinctly_numbered() {
+        let names = |names: &[&str]| {
+            names
+                .iter()
+                .map(|name| format!("/static/pages/s/c/{name}"))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            file_numbers(&names(&["3.webp", "1.avif", "2.jpg"])),
+            Some(vec![3, 1, 2])
+        );
+        assert_eq!(
+            file_numbers(&names(&["3.webp", "61ab16aa05cdf457.avif"])),
+            None
+        );
+        assert_eq!(file_numbers(&names(&["1.webp", "1.png"])), None);
+        assert_eq!(file_numbers(&names(&["01a.webp"])), None);
+        assert_eq!(file_numbers(&names(&["9999999999.webp"])), None);
     }
 
     #[test]
