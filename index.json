@@ -1,0 +1,441 @@
+{
+  "repo_name": "Ito Sources",
+  "repo_url": "https://ito-community.github.io/sources",
+  "description": "Community sourced and maintained plugins for Ito.",
+  "packages": [
+    {
+      "id": "com.kunihir0.flamecomics",
+      "name": "FlameComics",
+      "version": "1.1.1",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.flamecomics-v1.1.1.ito",
+      "icon_url": "icons/com.kunihir0.flamecomics-v1.1.1.png",
+      "sha256": "9b78cebb1bdae1111acd429cb4b1d2ec10f35250d5ecbc8357da7dee1d55ddbe",
+      "type": "manga",
+      "kinds": [
+        "manga",
+        "novel"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.hianime",
+      "name": "HIANIME",
+      "version": "1.2.0",
+      "min_app_version": "1.5.1",
+      "download_url": "packages/com.kunihir0.hianime-v1.2.0.ito",
+      "icon_url": "icons/com.kunihir0.hianime-v1.2.0.png",
+      "sha256": "1cc798176678591273f8a2717ed492192c0a01842015f1ca2f5b8477e4bc6d8d",
+      "type": "anime",
+      "kinds": [
+        "anime"
+      ],
+      "archived": false,
+      "archived_reason": "",
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.9.0 (224e448)",
+      "imports": [
+        "ito:core/net.fetch_batch",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.manhuaplus",
+      "name": "ManhuaPlus",
+      "version": "1.1.1",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.manhuaplus-v1.1.1.ito",
+      "icon_url": "icons/com.kunihir0.manhuaplus-v1.1.1.png",
+      "sha256": "0a81ecc2862da99ec3361a8a09cacc298599e8f945550099000812d502387e31",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.anikoto",
+      "name": "ANIKOTO",
+      "version": "1.5.0",
+      "min_app_version": "1.5.1",
+      "download_url": "packages/com.kunihir0.anikoto-v1.5.0.ito",
+      "icon_url": "icons/com.kunihir0.anikoto-v1.5.0.png",
+      "sha256": "0734b89b4eb060ea06b7d62ba82b7de1a256544342ec6292019a997b556baeca",
+      "type": "anime",
+      "kinds": [
+        "anime"
+      ],
+      "archived": false,
+      "archived_reason": "",
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.9.0 (224e448)",
+      "imports": [
+        "ito:core/html.attr",
+        "ito:core/html.free",
+        "ito:core/html.html_content",
+        "ito:core/html.parse",
+        "ito:core/html.select",
+        "ito:core/html.text",
+        "ito:core/net.fetch_batch",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print",
+        "ito:core/webview.webview_load_url",
+        "ito:core/webview.webview_read_result"
+      ]
+    },
+    {
+      "id": "com.kunihir0.novelfire",
+      "name": "NOVEL FIRE",
+      "version": "2.1.1",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.novelfire-v2.1.1.ito",
+      "icon_url": "icons/com.kunihir0.novelfire-v2.1.1.png",
+      "sha256": "11cb3bf28d9669b91fee866187564e78774e7c69b3645aad76d99308c97f4150",
+      "type": "novel",
+      "kinds": [
+        "novel"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/html.attr",
+        "ito:core/html.free",
+        "ito:core/html.parse",
+        "ito:core/html.select",
+        "ito:core/html.text",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.vortexscans",
+      "name": "Vortex Scans",
+      "version": "1.2.0",
+      "min_app_version": "1.5.1",
+      "download_url": "packages/com.kunihir0.vortexscans-v1.2.0.ito",
+      "icon_url": "icons/com.kunihir0.vortexscans-v1.2.0.png",
+      "sha256": "32c8be05dea3292a06821945eb41435e014a520395581748650f79651d02f69f",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.9.0 (224e448)",
+      "imports": [
+        "ito:core/defaults.get",
+        "ito:core/net.fetch_batch",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.thunderscans",
+      "name": "Thunder Scans",
+      "version": "1.1.0",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.thunderscans-v1.1.0.ito",
+      "icon_url": "icons/com.kunihir0.thunderscans-v1.1.0.png",
+      "sha256": "df59d3fdd9b5cba5a51c320fe510486c41be867c0903d086ad02ca152dab548a",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.ito.community.nhentai",
+      "name": "nhentai",
+      "version": "1.0.3",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.ito.community.nhentai-v1.0.3.ito",
+      "icon_url": "icons/com.ito.community.nhentai-v1.0.3.png",
+      "sha256": "07af15d788f9ce8692cbde44664e4e546f1d605aa8f8a3174f68a1b3853ad8a9",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/defaults.get",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.novelbin",
+      "name": "NovelBin",
+      "version": "1.1.1",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.novelbin-v1.1.1.ito",
+      "icon_url": "icons/com.kunihir0.novelbin-v1.1.1.png",
+      "sha256": "f67f211ad972d4708ada5d19318a1806a184a19de91954527f104e68f16784d9",
+      "type": "novel",
+      "kinds": [
+        "novel"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.asurascans",
+      "name": "Asura Scans",
+      "version": "1.1.2",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.asurascans-v1.1.2.ito",
+      "icon_url": "icons/com.kunihir0.asurascans-v1.1.2.png",
+      "sha256": "f2d22b91fc89cc36d14346c53b3d2c29a09a1eec8cde61aa9a828f60b3e0c86e",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/defaults.get",
+        "ito:core/html.attr",
+        "ito:core/html.free",
+        "ito:core/html.parse",
+        "ito:core/html.select",
+        "ito:core/html.text",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.ito.atsumaru",
+      "name": "Atsumaru",
+      "version": "2.3.3",
+      "min_app_version": "1.5.1",
+      "download_url": "packages/com.kunihir0.ito.atsumaru-v2.3.3.ito",
+      "icon_url": "icons/com.kunihir0.ito.atsumaru-v2.3.3.png",
+      "sha256": "a553d87543fdb779bd083f03bf7dd74c7a1fe10b0d7ac3306e9cc417142e9cdd",
+      "type": "manga",
+      "kinds": [
+        "manga",
+        "novel"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.9.0 (224e448)",
+      "imports": [
+        "ito:core/defaults.get",
+        "ito:core/defaults.set",
+        "ito:core/net.fetch_batch",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.rizzcomic",
+      "name": "RizzComic",
+      "version": "1.1.0",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.rizzcomic-v1.1.0.ito",
+      "icon_url": "icons/com.kunihir0.rizzcomic-v1.1.0.png",
+      "sha256": "935c3d63e5c82f6cb46a2baa2046620ceb92404c15ee4b9cf7d1d755d404ea62",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.comix",
+      "name": "COMIX",
+      "version": "2.2.0",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.comix-v2.2.0.ito",
+      "icon_url": "icons/com.kunihir0.comix-v2.2.0.png",
+      "sha256": "9ca3140eacd607b676cf3d607e123d35153900a9b10717a4f7b755befb5327ec",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.luacomics",
+      "name": "LUACOMICS",
+      "version": "1.2.0",
+      "min_app_version": "1.5.1",
+      "download_url": "packages/com.kunihir0.luacomics-v1.2.0.ito",
+      "icon_url": "icons/com.kunihir0.luacomics-v1.2.0.png",
+      "sha256": "e30cfe6bd2f180f65ddc4c6a568ec698e2519d56347b89bdc26ede947375fc2a",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.9.0 (224e448)",
+      "imports": [
+        "ito:core/html.attr",
+        "ito:core/html.free",
+        "ito:core/html.parse",
+        "ito:core/html.select",
+        "ito:core/html.text",
+        "ito:core/net.fetch_batch",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.templescan",
+      "name": "Temple Scan",
+      "version": "1.1.1",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.templescan-v1.1.1.ito",
+      "icon_url": "icons/com.kunihir0.templescan-v1.1.1.png",
+      "sha256": "d9ce01bad77a888d6bcea7125f9285120715c546659e06f20f95401124edaec0",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/std.print",
+        "ito:core/webview.webview_execute_js",
+        "ito:core/webview.webview_load_url",
+        "ito:core/webview.webview_read_result"
+      ]
+    },
+    {
+      "id": "com.kunihir0.mangafire",
+      "name": "MangaFire",
+      "version": "1.3.0",
+      "min_app_version": "1.5.1",
+      "download_url": "packages/com.kunihir0.mangafire-v1.3.0.ito",
+      "icon_url": "icons/com.kunihir0.mangafire-v1.3.0.png",
+      "sha256": "03585a3c2c348932e0ffd6036f8d54210e6770a7a22449f7bb1c01af622c44ab",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.9.0 (224e448)",
+      "imports": [
+        "ito:core/env.get_languages",
+        "ito:core/net.fetch_batch",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    },
+    {
+      "id": "com.kunihir0.violetscans",
+      "name": "VIOLETSCANS",
+      "version": "1.1.0",
+      "min_app_version": "1.5.0",
+      "download_url": "packages/com.kunihir0.violetscans-v1.1.0.ito",
+      "icon_url": "icons/com.kunihir0.violetscans-v1.1.0.png",
+      "sha256": "2267501d238e4cdf766fba83626bb91d8856df6991a735a5716f719c04c00ff0",
+      "type": "manga",
+      "kinds": [
+        "manga"
+      ],
+      "archived": null,
+      "archived_reason": null,
+      "archived_date": null,
+      "abi": 3,
+      "sdk": "ito-rs 0.8.0 (213ccaa)",
+      "imports": [
+        "ito:core/html.attr",
+        "ito:core/html.free",
+        "ito:core/html.parse",
+        "ito:core/html.select",
+        "ito:core/html.text",
+        "ito:core/net.fetch_read",
+        "ito:core/net.fetch_v2",
+        "ito:core/std.print"
+      ]
+    }
+  ]
+}
